@@ -1536,3 +1536,11 @@ button:focus-visible { outline: 2px solid rgba(var(--tint), 0.7); outline-offset
   .remote .buttons, .remote-extra { justify-content: center; }
 }
 body.view-remote #minibar { display: none; }
+
+/* folders on drives that aren't connected */
+.folder-list li.off { cursor: pointer; color: var(--text-3); flex-wrap: wrap; }
+.folder-list li.off::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.folder-list li small { width: 100%; padding-left: 25px; font-size: 10.5px; color: var(--text-3); }
+.folder-list li.locked small { color: var(--accent); }
+.row.offline { opacity: 0.42; }
+.row.offline .t1::after { content: " · not connected"; font-weight: 400; font-size: 11px; color: var(--text-3); }

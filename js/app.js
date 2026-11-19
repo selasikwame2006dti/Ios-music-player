@@ -194,7 +194,7 @@
 
   function ingest(entries, rootName, opts) {
     opts = opts || {};
-    var added = [], skippedDrm = 0;
+    var added = [], skippedDrm = 0, relinked = [];
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       var fname = e.file.name;
@@ -209,7 +209,16 @@
       if (ext === 'lrc') { state.lrcFiles.set(e.path.replace(/\.[^.\/]+$/, '').toLowerCase(), e.file); continue; }
       if (ext === 'm4p') { skippedDrm++; continue; }
       if (AUDIO_EXT.indexOf(ext) < 0) continue;
-      if (state.byPath.has(e.path)) continue;
+      var have = state.byPath.get(e.path);
+      if (have) {
+        // same song seen again (drive plugged back in, or a fresh scan): point it at the new file
+        if (have.file !== e.file) { have.file = e.file; }
+        if (have.offline) { have.offline = false; relinked.push(have); }
+        have.broken = false;
+        if (opts.seen) opts.seen.add(e.path);
+        continue;
+      }
+      if (opts.seen) opts.seen.add(e.path);
       var t = makeTrack(e.file, e.path, ext);
       computeAlbumKey(t);
       state.tracks.push(t);
@@ -218,10 +227,15 @@
       added.push(t);
     }
     if (rootName && state.folders.indexOf(rootName) < 0) state.folders.push(rootName);
+    if (relinked.length) {
+      // covers looked up while the drive was away came back empty; look again
+      relinked.forEach(function (t) { if (coverSync.get(t.albumKey) === null) { coverCache.delete(t.albumKey); coverSync.delete(t.albumKey); } });
+    }
+    if (opts.root && opts.seen) dropMissing(opts.root, opts.seen);
     invalidate();
     renderAll();
     if (skippedDrm) toast(plural(skippedDrm, 'copy-protected iTunes file') + ' (.m4p) skipped — browsers can’t play those.', 5000);
-    if (!added.length && !skippedDrm && !opts.quiet) toast(opts.rescan ? 'No new songs.' : 'No playable music found there.');
+    if (!added.length && !skippedDrm && !opts.quiet && !relinked.length) toast(opts.rescan ? 'No new songs.' : 'No playable music found there.');
     if (added.length) {
       toast((opts.rescan || opts.quiet ? 'Found ' + plural(added.length, 'new song') : 'Added ' + plural(added.length, 'song')) + '.');
       loadMetaCache().then(function () {
@@ -277,6 +291,7 @@
     tagRunning++;
     while (tagQueue.length) {
       var t = tagQueue.shift();
+      if (t.offline) { tagDone++; continue; }
       var m = await Meta.read(t.file, t.ext, false);
       if (m.title) t.title = m.title;
       if (m.artist) t.artist = m.artist;
@@ -316,14 +331,14 @@
   var rowsSoon = throttle(function () { renderRows(); updateHeroMeta(); }, 1000);
 
   function startDurations() {
-    durQueue = state.tracks.filter(function (t) { return !t.duration && !t.broken; });
+    durQueue = state.tracks.filter(function (t) { return !t.duration && !t.broken && !t.offline; });
     if (!durRunning) durWorker();
   }
   async function durWorker() {
     durRunning = true;
     while (durQueue.length) {
       var t = durQueue.shift();
-      if (t.duration) continue;
+      if (t.duration || t.offline) continue;
       t.duration = await probeDuration(t.file);
       if (t.duration) markMetaDirty(t);
       rowsSoon();
@@ -378,6 +393,7 @@
     if (!t) return Promise.resolve(null);
     var key = t.albumKey;
     if (coverCache.has(key)) return coverCache.get(key);
+    if (t.offline && !(typeof coverEdits === 'object' && coverEdits && coverEdits[key])) return Promise.resolve(null);
     var p = limited(function () {
       if (typeof coverEdits === 'object' && coverEdits && coverEdits[key]) return processCover(coverEdits[key]);
       return Meta.read(t.file, t.ext, true).then(function (m) {
@@ -711,7 +727,7 @@
     $('countSongs').textContent = has ? state.tracks.length : '';
     $('countAlbums').textContent = has ? getAlbums().length : '';
     $('countArtists').textContent = has ? getArtists().length : '';
-    $('folderList').innerHTML = state.folders.map(function (f) { return '<li title="' + esc(f) + '">' + esc(f) + '</li>'; }).join('');
+    renderFolderList();
 
     var v = state.view;
     $('songList').hidden = !has || !isListView(v);
@@ -886,7 +902,7 @@
     var html = '';
     for (var i = range[0]; i < range[1]; i++) {
       var t = state.byId.get(ids[i]);
-      var cls = 'row' + (t.id === cur ? ' playing' : '') + (t.id === state.selectedId ? ' sel' : '') + (t.broken ? ' broken' : '');
+      var cls = 'row' + (t.id === cur ? ' playing' : '') + (t.id === state.selectedId ? ' sel' : '') + (t.broken ? ' broken' : '') + (t.offline ? ' offline' : '');
       var num = t.id === cur ? '<span class="eq"><i></i><i></i><i></i></span>'
               : '<span class="n">' + (albumView ? (t.track || '') : i + 1) + '</span>';
       var thumb = albumView ? '' :
@@ -1077,6 +1093,17 @@
 
   function loadTrack(t, autoplay, startAt) {
     if (!t) return;
+    if (t.offline) {
+      var root = rootOf(t), path = t.path;
+      if (t.offline === 'locked') {
+        unlockFolder(root).then(function (ok) { var nt = ok && state.byPath.get(path); if (nt && !nt.offline) loadTrack(nt, autoplay, startAt); });
+        return;
+      }
+      toast('“' + root + '” isn’t connected — skipping its songs.', 2200);
+      var ni = nextIndex();
+      if (ni >= 0 && ni !== state.qIndex) { state.qIndex = ni; loadTrack(state.byId.get(state.queue[ni]), autoplay); }
+      return;
+    }
     cancelFade();
     var prev = state.current;
     pendingSeek = startAt || 0;
@@ -1089,7 +1116,7 @@
   // Fade the current song out while the next one fades in.
   function crossfadeTo(i, secs) {
     var t = state.byId.get(state.queue[i]);
-    if (!t) return false;
+    if (!t || t.offline) return false;
     cancelFade();
     var fromIdx = active, toIdx = 1 - active, from = decks[fromIdx], to = decks[toIdx];
     var prev = state.current;
@@ -1211,13 +1238,15 @@
     state.qIndex = Math.max(0, state.queue.indexOf(cur));
   }
 
+  function playableAt(i) { var t = state.byId.get(state.queue[i]); return !!t && !t.offline; }
   function nextIndex() {
     djFill();
     var i = state.qIndex + 1;
+    while (i < state.queue.length && !playableAt(i)) i++;
     if (i < state.queue.length) return i;
     if (state.repeat === 'all' && state.queue.length) {
       if (state.shuffle) shuffleArr(state.queue);
-      return 0;
+      for (var j = 0; j < state.queue.length; j++) if (playableAt(j)) return j;
     }
     return -1;
   }
@@ -1296,13 +1325,21 @@
       if (this !== audio) return;
       var t = state.current;
       if (!t || !audio.getAttribute('src')) return;
+      var dk = this;
+      checkSourceGone(t).then(function (gone) {
+        if (dk !== audio || state.current !== t) return;
+        if (gone) { renderRows(); next(false); return; }
+        cantPlay(t);
+      });
+    });
+  });
+  function cantPlay(t) {
       t.broken = true;
       renderRows();
       errorStreak++;
       toast('Can’t play “' + t.title + '” in this browser' + (t.ext === 'aiff' || t.ext === 'aif' || t.ext === 'caf' ? ' (try Safari for AIFF/ALAC).' : '.'));
       if (errorStreak < 5) next(false); else { errorStreak = 0; pause(); }
-    });
-  });
+  }
 
   /* ---------------- listening stats (used by the DJ) ---------------- */
   var stats = {};
@@ -1361,7 +1398,7 @@
     var best = [];
     for (var i = 0; i < state.tracks.length; i++) {
       var c = state.tracks[i];
-      if (c.broken || queued.has(c.id)) continue;
+      if (c.broken || c.offline || queued.has(c.id)) continue;
       var sc = Math.random() * (1 + variety * 4);
       if (recent.has(c.path)) sc -= 40;
       if (ref) {
@@ -2099,14 +2136,28 @@
 
   async function scanHandle(handle, opts) {
     var out = [];
-    if (!(opts && opts.quiet)) setStatus('Looking for music…');
+    opts = opts || {};
+    if (!opts.quiet) setStatus('Looking for music…');
+    var complete = true;
     try {
       await walkHandle(handle, handle.name, out);
     } catch (e) {
-      toast('Couldn’t read that folder: ' + (e && e.message ? e.message : e));
+      complete = false;
+      if (!out.length) {
+        // the folder is gone for now — usually a USB stick, SD card or external drive that's unplugged
+        setStatus('');
+        folderMissing(handle, 'missing');
+        return false;
+      }
+      toast('Couldn’t read all of “' + handle.name + '”: ' + (e && e.message ? e.message : e));
     }
     setStatus('');
-    ingest(out, handle.name, opts);
+    var wasAway = folderStatus.get(handle.name);
+    folderStatus.set(handle.name, { handle: handle, status: 'ok' });
+    ingest(out, handle.name, { quiet: opts.quiet, rescan: opts.rescan, root: complete ? handle.name : null, seen: new Set() });
+    if (wasAway && wasAway.status !== 'ok') toast('“' + handle.name + '” is connected again ✓', 2200);
+    renderFolderList();
+    return true;
   }
 
   async function walkHandle(dir, prefix, out) {
@@ -2229,6 +2280,117 @@
     await idbSet('handles', list);
   }
 
+  /* ---------------- folders on drives that come and go ---------------- */
+  // A folder can be unavailable because its drive is unplugged ('missing'), because the browser
+  // needs permission again after a restart ('locked'), or because it was picked without a way to
+  // reopen it later ('removed'). Its songs stay in the library, greyed out, from the saved song info.
+  var folderStatus = new Map();
+  function rootOf(t) { return t.path.split('/')[0]; }
+  function folderMissing(handle, why) {
+    var name = handle.name || handle;
+    var had = folderStatus.get(name);
+    folderStatus.set(name, { handle: handle.name ? handle : (had && had.handle), status: why });
+    var n = 0;
+    state.tracks.forEach(function (t) { if (rootOf(t) === name && !t.offline) { t.offline = why; n++; } });
+    if (state.folders.indexOf(name) < 0) state.folders.push(name);
+    return loadMetaCache().then(function (m) {
+      m.forEach(function (r, path) {
+        if (path.indexOf(name + '/') !== 0 || state.byPath.has(path)) return;
+        var ext = extOf(path);
+        if (AUDIO_EXT.indexOf(ext) < 0) return;
+        var f;
+        try { f = new File([], path.split('/').pop()); } catch (e) { f = new Blob([]); }
+        var t = makeTrack(f, path, ext);
+        META_FIELDS.forEach(function (k) { if (r[k] !== undefined && r[k] !== '') t[k] = r[k]; });
+        t.tagged = true;
+        t.offline = why;
+        computeAlbumKey(t);
+        applyEdit(t);
+        state.tracks.push(t);
+        state.byId.set(t.id, t);
+        state.byPath.set(t.path, t);
+        n++;
+      });
+      invalidate();
+      renderAll(true);
+      renderFolderList();
+      if (why === 'missing' && n) setStatus('“' + name + '” isn’t connected');
+      return n;
+    });
+  }
+  // songs that vanished from a folder we could fully read were deleted or moved: take them out
+  function dropMissing(root, seen) {
+    var gone = state.tracks.filter(function (t) { return rootOf(t) === root && !seen.has(t.path) && t !== state.current; });
+    if (!gone.length) return;
+    var goneIds = new Set(gone.map(function (t) { return t.id; }));
+    state.tracks = state.tracks.filter(function (t) { return !goneIds.has(t.id); });
+    gone.forEach(function (t) { state.byId.delete(t.id); state.byPath.delete(t.path); });
+    // forget their saved song info too, so they don't come back as 'not connected' later
+    gone.forEach(function (t) { if (metaCache) metaCache.delete(t.path); });
+    idbOpen().then(function (db) {
+      var st = db.transaction('meta', 'readwrite').objectStore('meta');
+      gone.forEach(function (t) { st.delete(t.path); });
+    }).catch(function () {});
+    var cur = state.queue[state.qIndex];
+    state.queue = state.queue.filter(function (id) { return !goneIds.has(id); });
+    state.originalQueue = state.originalQueue.filter(function (id) { return !goneIds.has(id); });
+    state.qIndex = Math.max(-1, state.queue.indexOf(cur));
+  }
+  // ask again for a folder that needs permission (must follow a click)
+  async function unlockFolder(name) {
+    var st = folderStatus.get(name);
+    if (!st || !st.handle || !st.handle.requestPermission) return false;
+    var p = 'denied';
+    try { p = await st.handle.requestPermission({ mode: 'read' }); } catch (e) { /* ignore */ }
+    if (p !== 'granted') { toast('Permission not given for “' + name + '”.'); return false; }
+    $('reopenBanner').hidden = true;
+    return scanHandle(st.handle, { quiet: true });
+  }
+  // a song couldn't be read: find out if its whole folder went away (drive pulled out mid-play)
+  function checkSourceGone(t) {
+    var f = t.file;
+    if (!f || !f.size) return Promise.resolve(false);
+    return readAB(f, 1).then(function () { return false; }, function () {
+      var name = rootOf(t), st = folderStatus.get(name);
+      folderMissing(st && st.handle ? st.handle : name, st && st.handle ? 'missing' : 'removed');
+      toast('“' + name + '” was disconnected. Its songs will play again when it’s back.', 4000);
+      return true;
+    });
+  }
+  // every few seconds, see whether an unplugged drive is back
+  var driveCheckBusy = false;
+  async function checkDrives() {
+    if (driveCheckBusy) return;
+    var away = [];
+    folderStatus.forEach(function (st) { if (st.status === 'missing' && st.handle && st.handle.values) away.push(st.handle); });
+    if (!away.length) return;
+    driveCheckBusy = true;
+    for (var i = 0; i < away.length; i++) {
+      var back = false;
+      try { var it = away[i].values(); await it.next(); back = true; } catch (e) { back = false; }
+      if (back) await scanHandle(away[i], { quiet: true });
+    }
+    driveCheckBusy = false;
+  }
+  setInterval(checkDrives, 8000);
+  window.addEventListener('focus', checkDrives);
+  function renderFolderList() {
+    $('folderList').innerHTML = state.folders.map(function (f) {
+      var st = folderStatus.get(f), s2 = st ? st.status : 'ok';
+      var label = s2 === 'missing' ? 'Not connected' : s2 === 'locked' ? 'Tap to reconnect' : s2 === 'removed' ? 'Pick again to reconnect' : '';
+      return '<li title="' + esc(f) + '" class="' + (s2 !== 'ok' ? 'off ' + s2 : '') + '" data-folder="' + esc(f) + '">' + esc(f) + (label ? '<small>' + label + '</small>' : '') + '</li>';
+    }).join('');
+  }
+  $('folderList').addEventListener('click', function (e) {
+    var li = e.target.closest('[data-folder]');
+    if (!li) return;
+    var name = li.getAttribute('data-folder'), st = folderStatus.get(name);
+    if (!st || st.status === 'ok') return;
+    if (st.status === 'locked') unlockFolder(name);
+    else if (st.status === 'missing') { toast('Plug in the drive with “' + name + '” — Tunebox picks it up by itself.', 3000); checkDrives(); }
+    else if (st.status === 'removed') $('dirInput').click();
+  });
+
   async function checkRemembered() {
     if (!hasFSA) return;
     var list = (await idbGet('handles')) || [];
@@ -2240,6 +2402,7 @@
       (perm === 'granted' && settings.autoOpen !== false ? ready : needAsk).push(list[i]);
     }
     for (var j = 0; j < ready.length; j++) await scanHandle(ready[j]);
+    needAsk.forEach(function (h) { folderMissing(h, 'locked'); });
     if (needAsk.length) {
       $('reopenText').innerHTML = 'Welcome back! Reopen <b>' + needAsk.map(function (h) { return esc(h.name); }).join('</b>, <b>') + '</b> to pick up where you left off.';
       $('reopenBanner').hidden = false;
@@ -2958,7 +3121,7 @@
   }
   var OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   function analysisOn() { return !!OAC && (typeof settings.analyze === 'boolean' ? settings.analyze : !IS_PHONE); }
-  function needsAnalysis(t) { return !t.broken && !t.anaFail && (typeof t.loud !== 'number' || !t.bpm); }
+  function needsAnalysis(t) { return !t.broken && !t.offline && !t.anaFail && (typeof t.loud !== 'number' || !t.bpm); }
   var anaBusy = false, anaCursor = 0, anaDone = 0;
   function pickToAnalyse() {
     if (state.current && needsAnalysis(state.current)) return state.current;
@@ -4509,6 +4672,7 @@
     get graph() { return !!ac; },
     get fading() { return !!fade; },
     get gain() { return deckGains ? deckGains[active].gain.value : null; },
+    debugScan: function (h) { return scanHandle(h); },
     connect: { get peers() { return peers; }, handleCode: handleCode, startHosting: startHosting, startParty: startParty, sendTracks: sendTracks, get remote() { return remotePeer; } }
   };
 })();

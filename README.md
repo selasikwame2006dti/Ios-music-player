@@ -79,6 +79,12 @@ Tip: bookmark the page so you can open it in one click.
 - **Choppy sound after Bluetooth disconnects:** when headphones connect or disconnect, Tunebox restarts its audio engine on the new output. It also watches for stutter and fixes it by itself. It uses larger audio buffers on phones and only runs the reverb while it's turned up. If sound still stutters, turn off **Settings → App → Sound effects engine**.
 - **Android folders:** **Choose music folder** now picks a whole folder on Android, such as Music or Download. The songs are kept in Tunebox.
 - **Check for new songs** (sidebar, Browse or Settings) adds only songs that aren't in your library yet. On a computer with Chrome or Edge, **Watch folders** does this by itself when you come back to Tunebox and every 10 minutes. On a phone, pick the same folder again.
+- **USB sticks, SD cards and external drives:**
+  - If a music folder's drive is unplugged, its songs stay in your library, greyed out and marked "not connected". Playback, shuffle and the DJ skip them.
+  - Plug the drive back in and Tunebox notices within a few seconds and makes them playable again. It also adds new songs and removes ones you deleted.
+  - Pulling the drive out mid-song skips to the next available song.
+  - After Chrome restarts, a folder may show **Tap to reconnect**. Tap it, or any of its songs, to give permission again.
+  - On Android, songs from a folder you pick are copied into Tunebox, so they keep playing after the SD card or USB drive is removed.
 - **Lock screen and notification controls:** album art shows reliably, the progress bar stays in sync, skip and seek buttons work, and tapping a song notification brings Tunebox back.
 
 ## Windows, Android, iPhone
