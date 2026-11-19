@@ -206,9 +206,31 @@
     return 0;
   }
 
+  // match a picked file to a song that's waiting to be reconnected, by its last folders + file name
+  var offlineIdx = null;
+  function pathTail(p, k) { var a = p.toLowerCase().split('/'); return a.length > k ? a.slice(-k).join('/') : null; }
+  function matchOffline(e) {
+    if (offlineIdx === null) {
+      offlineIdx = { 3: new Map(), 2: new Map() };
+      state.tracks.forEach(function (t) {
+        if (!t.offline) return;
+        [3, 2].forEach(function (k) {
+          var key = pathTail(t.path, k);
+          if (!key) return;
+          offlineIdx[k].set(key, offlineIdx[k].has(key) ? null : t); // null = ambiguous, don't guess
+        });
+      });
+    }
+    for (var k = 3; k >= 2; k--) {
+      var key = pathTail(e.path, k), t = key && offlineIdx[k].get(key);
+      if (t && t.offline) return t;
+    }
+    return null;
+  }
   function ingest(entries, rootName, opts) {
     opts = opts || {};
     var added = [], skippedDrm = 0, relinked = [];
+    offlineIdx = null;
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       var fname = e.file.name;
@@ -223,10 +245,11 @@
       if (ext === 'lrc') { state.lrcFiles.set(e.path.replace(/\.[^.\/]+$/, '').toLowerCase(), e.file); continue; }
       if (ext === 'm4p') { skippedDrm++; continue; }
       if (AUDIO_EXT.indexOf(ext) < 0) continue;
-      var have = state.byPath.get(e.path);
+      var have = state.byPath.get(e.path) || matchOffline(e);
       if (have) {
+        if (have.path !== e.path) state.byPath.set(e.path, have); // same song, picked through another folder
         // same song seen again (drive plugged back in, or a fresh scan): point it at the new file
-        if (have.file !== e.file) { have.file = e.file; }
+        if (have.file !== e.file) { have.file = e.file; have.usingCopy = false; }
         if (have.offline) { have.offline = false; relinked.push(have); }
         have.broken = false;
         if (opts.seen) opts.seen.add(e.path);
@@ -246,6 +269,7 @@
       relinked.forEach(function (t) { if (coverSync.get(t.albumKey) === null) { coverCache.delete(t.albumKey); coverSync.delete(t.albumKey); } });
     }
     if (opts.root && opts.seen) dropMissing(opts.root, opts.seen);
+    if (relinked.length) refreshFolderStates();
     invalidate();
     renderAll();
     if (skippedDrm) toast(plural(skippedDrm, 'copy-protected iTunes file') + ' (.m4p) skipped — browsers can’t play those.', 5000);
@@ -262,6 +286,7 @@
         djFill();
       });
     }
+    return { added: added, relinked: relinked };
   }
 
   function clearLibrary() {
@@ -1013,7 +1038,7 @@
   var deckUrls = [null, null];
   var vol = typeof settings.volume === 'number' ? settings.volume : 0.8;
   var muted = !!settings.muted;
-  var errorStreak = 0, seeking = false, pendingSeek = 0;
+  var errorStreak = 0, seeking = false, pendingSeek = 0, lastGood = { id: -1, time: 0 }; // last position that played fine
   var fade = null;          // crossfade in progress: { from, fromIdx, timer, iv }
   decks.forEach(function (d) { d.preload = 'auto'; });
 
@@ -1115,7 +1140,18 @@
     if (!t) return;
     if (t.offline) {
       var root = rootOf(t), path = t.path;
-      if (t.offline === 'removed') { toast('Pick the “' + root + '” folder again to play this song.', 2600); $('dirInput').click(); return; }
+      if (t.offline === 'removed') {
+        var nr = nextIndex();
+        if (nr >= 0 && nr !== state.qIndex) {
+          toast('Songs from “' + root + '” need the folder picked again — playing what’s available.', 3000);
+          state.qIndex = nr;
+          loadTrack(state.byId.get(state.queue[nr]), autoplay);
+          return;
+        }
+        toast('Pick the “' + root + '” folder again to play these songs.', 2600);
+        $('dirInput').click();
+        return;
+      }
       if (t.offline === 'locked') {
         unlockFolder(root).then(function (ok) { var nt = ok && state.byPath.get(path); if (nt && !nt.offline) loadTrack(nt, autoplay, startAt); });
         return;
@@ -1341,6 +1377,7 @@
     });
     d.addEventListener('timeupdate', function () {
       if (this !== audio) return;
+      if (audio.currentTime > 0 && state.current) lastGood = { id: state.current.id, time: audio.currentTime };
       updateTime(); updateLyricHighlight(); sampleStats(); listenTick(); ensureAudible(); maybeAutoCrossfade(); saveLastSoon();
     });
     d.addEventListener('seeked', function () { if (this === audio) { lyricIdx = -1; updateLyricHighlight(); } });
@@ -1352,6 +1389,7 @@
       var dk = this;
       checkSourceGone(t).then(function (gone) {
         if (dk !== audio || state.current !== t) return;
+        if (gone === 'copy') return; // already switched to the saved copy (one error can be reported twice)
         if (gone) { renderRows(); next(false); return; }
         cantPlay(t);
       });
@@ -2339,6 +2377,8 @@
       if (!out.length) {
         // the folder is gone for now — usually a USB stick, SD card or external drive that's unplugged
         setStatus('');
+        var cur = folderStatus.get(handle.name);
+        if (cur && cur.status === 'ok' && cur.handle && cur.handle !== handle) return false; // another link to it works
         folderMissing(handle, 'missing');
         return false;
       }
@@ -2347,6 +2387,7 @@
     setStatus('');
     var wasAway = folderStatus.get(handle.name);
     folderStatus.set(handle.name, { handle: handle, status: 'ok' });
+    if (complete) folderIndexGet().then(function (idx) { idx[handle.name] = []; saveFolderIndex(handle.name, out); });
     ingest(out, handle.name, { quiet: opts.quiet, rescan: opts.rescan, root: complete ? handle.name : null, seen: new Set() });
     if (wasAway && wasAway.status !== 'ok') toast('“' + handle.name + '” is connected again ✓', 2200);
     renderFolderList();
@@ -2469,6 +2510,8 @@
     for (var i = 0; i < list.length; i++) {
       try { if (await list[i].isSameEntry(h)) return; } catch (e) { /* ignore */ }
     }
+    // the same folder added again (e.g. the drive got a new letter): drop the old, dead link
+    list = list.filter(function (x) { return x.name !== h.name; });
     list.push(h);
     await idbSet('handles', list);
   }
@@ -2479,6 +2522,29 @@
   // reopen it later ('removed'). Its songs stay in the library, greyed out, from the saved song info.
   var folderStatus = new Map();
   function rootOf(t) { return t.path.split('/')[0]; }
+  // the list of songs in each folder, saved as soon as the folder is read
+  var folderIndex = null;
+  function folderIndexGet() {
+    if (folderIndex) return Promise.resolve(folderIndex);
+    return idbGet('folderIndex').then(function (x) { folderIndex = x || {}; return folderIndex; }, function () { folderIndex = {}; return folderIndex; });
+  }
+  function saveFolderIndex(root, entries) {
+    if (!root) return;
+    folderIndexGet().then(function (idx) {
+      var had = new Set(idx[root] || []);
+      entries.forEach(function (e) { if (AUDIO_EXT.indexOf(extOf(e.path)) >= 0 && e.path.indexOf(root + '/') === 0) had.add(e.path); });
+      idx[root] = Array.from(had);
+      idbSet('folderIndex', idx);
+    });
+  }
+  function refreshFolderStates() {
+    var waiting = {};
+    state.tracks.forEach(function (t) { if (t.offline) waiting[rootOf(t)] = 1; });
+    folderStatus.forEach(function (st, name) { if (st.status !== 'ok' && !waiting[name]) st.status = 'ok'; });
+    var br = $('reopenBanner').getAttribute('data-root');
+    if (br && !waiting[br]) $('reopenBanner').hidden = true;
+    renderFolderList();
+  }
   function folderMissing(handle, why) {
     var name = handle.name || handle;
     var had = folderStatus.get(name);
@@ -2486,16 +2552,19 @@
     var n = 0;
     state.tracks.forEach(function (t) { if (rootOf(t) === name && !t.offline && !t.stored) { t.offline = why; n++; } });
     if (state.folders.indexOf(name) < 0) state.folders.push(name);
-    return loadMetaCache().then(function (m) {
-      m.forEach(function (r, path) {
-        if (path.indexOf(name + '/') !== 0 || state.byPath.has(path)) return;
+    return Promise.all([loadMetaCache(), folderIndexGet()]).then(function (res) {
+      var m = res[0], idx = res[1][name] || [];
+      // every song we know was in the folder: saved song info, plus the folder's list of paths
+      var paths = new Set(idx);
+      m.forEach(function (r, path) { if (path.indexOf(name + '/') === 0) paths.add(path); });
+      paths.forEach(function (path) {
+        if (state.byPath.has(path)) return;
         var ext = extOf(path);
         if (AUDIO_EXT.indexOf(ext) < 0) return;
-        var f;
+        var f, r = m.get(path);
         try { f = new File([], path.split('/').pop()); } catch (e) { f = new Blob([]); }
         var t = makeTrack(f, path, ext);
-        META_FIELDS.forEach(function (k) { if (r[k] !== undefined && r[k] !== '') t[k] = r[k]; });
-        t.tagged = true;
+        if (r) { META_FIELDS.forEach(function (k) { if (r[k] !== undefined && r[k] !== '') t[k] = r[k]; }); t.tagged = true; }
         t.offline = why;
         computeAlbumKey(t);
         applyEdit(t);
@@ -2540,14 +2609,61 @@
     return scanHandle(st.handle, { quiet: true });
   }
   // a song couldn't be read: find out if its whole folder went away (drive pulled out mid-play)
+  function storedCopies(paths) {
+    return fdbOpen().then(function (db) {
+      return Promise.all(paths.map(function (p) {
+        return new Promise(function (res) {
+          var rq = db.transaction('files').objectStore('files').get(p);
+          rq.onsuccess = function () {
+            var v = rq.result;
+            if (!v) { res(null); return; }
+            var f;
+            try { f = new File([v.blob], v.name, { type: v.type, lastModified: v.lm }); } catch (e) { f = v.blob; f.name = v.name; }
+            res({ path: p, file: f });
+          };
+          rq.onerror = function () { res(null); };
+        });
+      }));
+    }).catch(function () { return []; });
+  }
+  // the player can report the same failure more than once: answer them all with one check
   function checkSourceGone(t) {
+    if (t.__goneCheck) return t.__goneCheck;
+    var p = checkSourceGoneOnce(t);
+    t.__goneCheck = p;
+    p.then(function () { setTimeout(function () { t.__goneCheck = null; }, 1500); });
+    return p;
+  }
+  function checkSourceGoneOnce(t) {
     var f = t.file;
     if (!f || !f.size) return Promise.resolve(false);
     return readAB(f, 1).then(function () { return false; }, function () {
       var name = rootOf(t), st = folderStatus.get(name);
-      folderMissing(st && st.handle ? st.handle : name, st && st.handle ? 'missing' : 'removed');
-      toast('“' + name + '” was disconnected. Its songs will play again when it’s back.', 4000);
+      // songs Tunebox kept a copy of switch to that copy and keep playing
+      var kept = state.tracks.filter(function (x) { return x.stored && rootOf(x) === name; });
+      return storedCopies(kept.map(function (x) { return x.path; })).then(function (copies) {
+        var wasCopy = t.usingCopy;
+        copies.forEach(function (c) { if (c) { var x = state.byPath.get(c.path); if (x && !x.usingCopy) { x.file = c.file; x.usingCopy = true; } } });
+        if (t.stored && !wasCopy && copies.some(function (c) { return c && c.path === t.path; })) {
+          // the player may already have reset to 0:00 — carry on from where it really was
+          var pos = lastGood.id === t.id ? lastGood.time : audio.currentTime;
+          loadTrack(t, true, pos);
+          // the folder's songs without a copy wait for it to come back
+          if (state.tracks.some(function (x) { return rootOf(x) === name && !x.stored && !x.offline; })) markGone(true);
+          return 'copy';
+        }
+        return markGone();
+      });
+      function markGone(quiet) {
+      var watched = !!(st && st.handle);
+      folderMissing(watched ? st.handle : name, watched ? 'missing' : 'removed').then(function (n) {
+        if (!watched) showPickBanner([name], n);
+      });
+      toast(quiet ? '“' + name + '” was disconnected — playing the copy saved on this device.'
+        : watched ? '“' + name + '” was disconnected. Its songs will play again when it’s back.'
+        : '“' + name + '” was disconnected. Put it back, then tap Pick folder to keep playing it.', 4500);
       return true;
+      }
     });
   }
   // every few seconds, see whether an unplugged drive is back
@@ -3624,8 +3740,11 @@
     if (!roots.length) return;
     Promise.all(roots.map(function (r) { return folderMissing(r, 'removed'); })).then(function (counts) {
       var waiting = roots.filter(function (r, i) { return counts[i] > 0; });
-      if (!waiting.length) return;
-      var n = counts.reduce(function (a, b) { return a + b; }, 0);
+      showPickBanner(waiting, counts.reduce(function (a, b) { return a + b; }, 0));
+    });
+  }
+  function showPickBanner(waiting, n) {
+      if (!waiting.length || !n) return;
       $('reopenText').innerHTML = plural(n, 'song') + ' from <b>' + waiting.map(esc).join('</b>, <b>') + '</b> need the folder picked again — your phone only lets Tunebox read it while it’s open.';
       $('reopenBanner').setAttribute('data-root', waiting[0]);
       $('btnReopen').textContent = 'Pick folder';
@@ -3635,7 +3754,6 @@
         lsSet('tunebox.picked', lsGet('tunebox.picked', []).filter(function (r) { return waiting.indexOf(r) < 0; }));
         $('reopenBanner').hidden = true;
       };
-    });
   }
   function copyChoice(root) { var c = lsGet('tunebox.copyChoice', {}); return root ? c[root] : undefined; }
   function setCopyChoice(root, v) { if (!root) return; var c = lsGet('tunebox.copyChoice', {}); c[root] = v; lsSet('tunebox.copyChoice', c); }
@@ -3698,6 +3816,42 @@
         }, 'wide');
     });
   }
+  // Read the song into memory-backed pieces. Saving the picked File itself only stores a link
+  // to the original file, which stops working when the SD card or drive is removed.
+  async function fileBytes(f) {
+    var parts = [], CH = 4 * 1048576;
+    for (var o = 0; o < f.size; o += CH) {
+      parts.push(new Blob([await f.slice(o, Math.min(f.size, o + CH)).arrayBuffer()]));
+      if (IS_PHONE && o + CH < f.size) await sleepMs(4);
+    }
+    return new Blob(parts, { type: f.type || '' });
+  }
+  // Copies saved by older versions may only be links: re-save the ones we can still read,
+  // and treat the rest as songs waiting for their folder
+  async function verifyStoredCopies(entries) {
+    var old = entries.filter(function (e) { return !e.real; });
+    if (!old.length) return;
+    var redo = [], lost = [];
+    for (var i = 0; i < old.length; i++) {
+      try { await readAB(old[i].file, 1); redo.push(old[i]); } catch (e) { lost.push(old[i]); }
+      if (i % 20 === 19) await breathe();
+    }
+    if (lost.length) {
+      var db = await fdbOpen().catch(function () { return null; });
+      if (db) { var tx = db.transaction('files', 'readwrite'); lost.forEach(function (e) { tx.objectStore('files').delete(e.path); }); }
+      var roots = {};
+      lost.forEach(function (e) { var t = state.byPath.get(e.path); if (t) { t.stored = false; roots[rootOf(t)] = 1; } });
+      Object.keys(roots).forEach(function (r) {
+        rememberPicked(r);
+        folderMissing(r, 'removed').then(function (n) { showPickBanner([r], n); });
+      });
+    }
+    if (redo.length) {
+      storeQueue = storeQueue.concat(redo);
+      storeTotal += redo.length;
+      pumpStore();
+    }
+  }
   async function pumpStore(fit) {
     if (storing) return;
     storing = true;
@@ -3713,11 +3867,12 @@
       if (used > budget) { full = true; toast('Copied what fits — the other ' + plural(storeQueue.length + 1, 'song') + ' play from the folder.', 4000); break; }
       await breathe();
       if (IS_PHONE && !audio.paused) await sleepMs(120);
-      var tt = state.byPath.get(e.path);
+      var tt = state.byPath.get(e.path), data;
+      try { data = await fileBytes(e.file); } catch (err) { storeDone++; continue; } // the file went away: nothing to copy
       try {
         await new Promise(function (res, rej) {
           var tx = db.transaction('files', 'readwrite');
-          tx.objectStore('files').put({ blob: e.file, name: e.file.name, type: e.file.type, lm: e.file.lastModified }, e.path);
+          tx.objectStore('files').put({ blob: data, name: e.file.name, type: e.file.type, lm: e.file.lastModified, v: 2 }, tt ? tt.path : e.path);
           tx.oncomplete = function () { if (tt) tt.stored = true; res(); };
           tx.onerror = function () { rej(tx.error); };
           tx.onabort = function () { rej(tx.error); };
@@ -3746,7 +3901,7 @@
           if (!c) { res(out); return; }
           var v = c.value, f;
           try { f = new File([v.blob], v.name, { type: v.type, lastModified: v.lm }); } catch (e) { f = v.blob; f.name = v.name; }
-          out.push({ file: f, path: c.key });
+          out.push({ file: f, path: c.key, real: v.v === 2 });
           c.continue();
         };
         req.onerror = function () { res(out); };
@@ -5164,11 +5319,18 @@
 
   $('dirInput').addEventListener('change', function () {
     var r = filesFromInput(this);
-    var fresh = r.entries.filter(function (e) { return !state.byPath.has(e.path); });
+    var knownBefore = new Set(r.entries.filter(function (e) { return state.byPath.has(e.path); }).map(function (e) { return e.path; }));
     var again = r.root && state.folders.indexOf(r.root) >= 0;
-    ingest(r.entries, r.root, { rescan: again });
+    var res = ingest(r.entries, r.root, { rescan: again });
+    var addedSet = new Set(res.added);
+    // copy only songs that are new to Tunebox — not ones that were just reconnected
+    var fresh = r.entries.filter(function (e) {
+      if (AUDIO_EXT.indexOf(extOf(e.path)) >= 0) return addedSet.has(state.byPath.get(e.path));
+      return !knownBefore.has(e.path);
+    });
     if (r.root) {
       rememberPicked(r.root);
+      saveFolderIndex(r.root, r.entries);
       folderStatus.set(r.root, { status: 'ok' });
       renderFolderList();
       if ($('reopenBanner').getAttribute('data-root') === r.root) $('reopenBanner').hidden = true;
@@ -5441,10 +5603,11 @@
     invalidate();
     renderAll(true);
   });
-  loadStoredFiles().then(function (entries) {
+  loadStoredFiles().catch(function () { return []; }).then(function (entries) {
     if (entries.length) {
       ingest(entries, 'Saved on this device');
       entries.forEach(function (e) { var t = state.byPath.get(e.path); if (t) t.stored = true; });
+      setTimeout(function () { verifyStoredCopies(entries); }, 4000);
     }
     restorePickedFolders();
     receiveShared();
@@ -5462,6 +5625,7 @@
     get fading() { return !!fade; },
     get gain() { return deckGains ? deckGains[active].gain.value : null; },
     debugScan: function (h) { return scanHandle(h); },
+    debugPlay: function (id) { var ids = state.tracks.map(function (t) { return t.id; }); playIds(ids, ids.indexOf(id)); },
     debugLyrics: function () { return fetchOnlineLyrics(state.current); },
     connect: { get peers() { return peers; }, handleCode: handleCode, startHosting: startHosting, startParty: startParty, sendTracks: sendTracks, get remote() { return remotePeer; } }
   };
