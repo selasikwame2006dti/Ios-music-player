@@ -1,6 +1,6 @@
 /* Tunebox offline support: keeps a copy of the app so it opens with no internet.
    Your music is never cached here — it is always read straight from your own files. */
-var CACHE = 'tunebox-v4';
+var CACHE = 'tunebox-v5';
 var ASSETS = [
   './',
   'index.html',
@@ -23,20 +23,23 @@ self.addEventListener('activate', function (e) {
   }).then(function () { return self.clients.claim(); }));
 });
 
-// Serve from the cache straight away (instant + offline), and refresh the cache in the
-// background so the next visit gets any update.
+// Online: fetch the latest version (and keep a copy). Offline or very slow: use the saved copy.
+// This way updates show up right away, and Tunebox still always opens without internet.
 self.addEventListener('fetch', function (e) {
   var req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(caches.open(CACHE).then(function (cache) {
-    return cache.match(req, { ignoreSearch: true }).then(function (hit) {
-      var net = fetch(req).then(function (res) {
-        if (res && res.ok) cache.put(req, res.clone());
-        return res;
-      }).catch(function () {
+    var fromCache = function () {
+      return cache.match(req, { ignoreSearch: true }).then(function (hit) {
         return hit || (req.mode === 'navigate' ? cache.match('index.html') : undefined);
       });
-      return hit || net;
+    };
+    var net = fetch(req).then(function (res) {
+      if (res && res.ok) cache.put(req, res.clone());
+      return res;
     });
+    // don't wait forever on a bad connection
+    var timeout = new Promise(function (resolve) { setTimeout(resolve, 3500); }).then(fromCache);
+    return Promise.race([net.catch(fromCache), timeout.then(function (r) { return r || net; })]);
   }));
 });
