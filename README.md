@@ -30,8 +30,12 @@ Tip: bookmark the page so you can open it in one click.
 
 ## Features
 
-- Songs, Albums, Artists and Up Next views
-- A full-screen Now Playing view (click the song in the player bar, or press **F**)
+- Songs, Albums, Artists, Favourites and Up Next views
+- A Now Playing panel with a big cover, live visualizer, controls and the next few songs
+- A full-screen Now Playing view (click the cover, or press **F**)
+- 3-band equalizer with presets: Flat, Warm, Bass boost, Vocal, Late night and Bright (press **E**)
+- Favourites, saved between visits (press **L**)
+- Light and dark glass themes (press **T**)
 - Colours taken from the album art of what you're looking at or listening to
 - Phone layout with a bottom tab bar
 - Reads song info and album art from the files (MP3, M4A/AAC, FLAC), with `cover.jpg`/`folder.jpg` as a fallback
@@ -40,8 +44,8 @@ Tip: bookmark the page so you can open it in one click.
 - Shuffle, repeat all / repeat one, sortable columns
 - Mac media keys (F7 / F8 / F9) and the macOS Now Playing widget
 - Remembers the last song and where you stopped, plus volume, shuffle and repeat
-- Light and dark mode follow your Mac's setting
-- Draws only the rows on screen, so big libraries stay smooth
+- Light and dark mode follow your Mac's setting unless you pick one
+- Draws only the rows on screen, so big libraries stay smooth. The colour glow uses plain gradients rather than live blur, and the visualizer stops while music is paused, which keeps older Macs cool and quiet
 
 ## Keyboard shortcuts
 
@@ -55,7 +59,10 @@ Tip: bookmark the page so you can open it in one click.
 | S | Shuffle |
 | R | Repeat (off → all → one) |
 | M | Mute |
-| F | Open / close Now Playing |
+| F | Open / close full-screen Now Playing |
+| L | Favourite the current song |
+| E | Equalizer |
+| T | Light / dark theme |
 | Esc | Close Now Playing |
 | Enter | Play selected song |
 

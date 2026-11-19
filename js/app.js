@@ -455,23 +455,28 @@
   // Fill a cover element now (if known) and again when it loads.
   function paintCover(el, t, name, text) {
     var known = coverSync.has(t.albumKey) ? coverSync.get(t.albumKey) : undefined;
-    el.innerHTML = coverInner(known, name, text);
+    var html = coverInner(known, name, text);
+    if (el.__html !== html) { el.innerHTML = html; el.__html = html; } // no flicker if unchanged
     if (known === undefined) {
       getCover(t).then(function (c) {
         if (el.getAttribute('data-k') && el.getAttribute('data-k') !== t.albumKey) return;
-        el.innerHTML = coverInner(c, name, text);
+        var h = coverInner(c, name, text);
+        if (el.__html !== h) { el.innerHTML = h; el.__html = h; }
       });
     }
   }
 
   function setTint(rgb, rgb2) {
     var root = document.documentElement.style;
+    var b = rgb2 || shiftHue(rgb, 40);
     root.setProperty('--tint', rgb.join(', '));
-    root.setProperty('--tint2', (rgb2 || shiftHue(rgb, 40)).join(', '));
+    root.setProperty('--tint2', b.join(', '));
+    // a deep, dark third colour for the centre of the ambient glow
+    root.setProperty('--tint3', b.map(function (c) { return Math.round(c * 0.3); }).join(', '));
   }
-  var DEFAULT_TINT = [255, 106, 61];
+  var DEFAULT_TINT = [245, 158, 11];
   function tintForTrack(t, cb) {
-    if (!t) { cb(DEFAULT_TINT, [232, 54, 107]); return; }
+    if (!t) { cb(DEFAULT_TINT, [59, 130, 246]); return; }
     getCover(t).then(function (c) {
       if (c && c.rgb) cb(c.rgb, shiftHue(c.rgb, 40));
       else { var f = fallbackColors(t.album); cb(f[0], f[1]); }
@@ -528,6 +533,7 @@
     ts = state.tracks.filter(function (t) {
       if (state.view === 'album' && t.albumKey !== state.detail) return false;
       if (state.view === 'artist' && artistOf(t) !== state.detail && t.artist !== state.detail) return false;
+      if (state.view === 'favorites' && !isFav(t)) return false;
       return matches(t, tm);
     });
 
@@ -598,10 +604,10 @@
 
   /* ------------------------------ rendering ------------------------------ */
 
-  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next' };
+  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next', favorites: 'Favourites' };
   var scroller = $('scroller');
 
-  function isListView(v) { return v === 'songs' || v === 'queue' || v === 'album' || v === 'artist'; }
+  function isListView(v) { return v === 'songs' || v === 'queue' || v === 'album' || v === 'artist' || v === 'favorites'; }
   function rowH() { return state.view === 'album' ? 48 : 56; }
 
   function setView(view, detail) {
@@ -643,7 +649,8 @@
     $('albumGrid').hidden = !has || v !== 'albums';
     $('artistGrid').hidden = !has || v !== 'artists';
     $('btnBack').hidden = !(v === 'album' || v === 'artist');
-    $('search').disabled = v === 'queue';
+    $('search').disabled = $('search2').disabled = v === 'queue';
+    $('countFavs').textContent = has && favCount() ? favCount() : '';
 
     if (!has) { $('noResults').hidden = true; return; }
     renderHero(soft);
@@ -679,7 +686,7 @@
     } else {
       title = VIEW_TITLES[v];
       html = '<div class="hero-text"><h1>' + title + '</h1><div class="hero-meta" id="heroMeta"></div>' +
-        (v === 'songs' ? heroActions() : '') + '</div>';
+        (v === 'songs' || v === 'favorites' ? heroActions() : '') + '</div>';
     }
     $('topTitle').textContent = title;
     if (!(soft && heroKey === key)) {
@@ -710,6 +717,8 @@
         var albums = new Set();
         ids.forEach(function (id) { albums.add(state.byId.get(id).albumKey); });
         txt = plural(albums.size, 'album') + ' · ' + songs;
+      } else if (v === 'favorites' && !ids.length && !state.filter) {
+        txt = 'No favourites yet. Tap the heart on the Now Playing panel (or press L) to add one.';
       } else if (v === 'queue') {
         txt = ids.length ? 'Playing from your queue · ' + songs : 'Nothing queued. Play a song to get started.';
       } else {
@@ -782,7 +791,7 @@
       html += '<div class="' + cls + '" data-i="' + i + '" style="top:' + (i * h) + 'px;height:' + h + 'px">' +
         '<div class="c-num">' + num + '<button class="rp" data-act="play" title="Play">' + ICON_PLAY + '</button></div>' +
         '<div class="c-title" title="' + esc(t.path) + '">' + thumb +
-          '<div class="tt"><div class="t1">' + esc(t.title) + '</div>' + (sub ? '<div class="t2">' + sub + '</div>' : '') + '</div></div>' +
+          '<div class="tt"><div class="t1">' + esc(t.title) + (isFav(t) ? HEART_SMALL : '') + '</div>' + (sub ? '<div class="t2">' + sub + '</div>' : '') + '</div></div>' +
         '<div class="c-album">' + esc(t.album) + '</div>' +
         '<div class="c-time">' + (t.duration ? fmtTime(t.duration) : '') + '</div>' +
       '</div>';
@@ -883,6 +892,8 @@
       if (ids.length) playIds(ids, state.shuffle ? Math.floor(Math.random() * ids.length) : 0);
       return;
     }
+    ensureAudioGraph();
+    if (ac && ac.state === 'suspended') ac.resume();
     var p = audio.play();
     if (p && p.catch) p.catch(function (e) { if (e && e.name === 'NotAllowedError') toast('Press play to start.'); });
   }
@@ -948,7 +959,10 @@
     loadTrack(state.byId.get(state.queue[i]), !audio.paused);
   }
 
-  function setPlayingClass() { document.body.classList.toggle('is-playing', !audio.paused); }
+  function setPlayingClass() {
+    document.body.classList.toggle('is-playing', !audio.paused);
+    startViz();
+  }
 
   audio.addEventListener('play', setPlayingClass);
   audio.addEventListener('pause', setPlayingClass);
@@ -991,26 +1005,31 @@
 
   function updateVolume() {
     var v = audio.muted ? 0 : audio.volume;
-    $('volume').value = v;
-    $('volume').style.setProperty('--p', (v * 100) + '%');
-    $('btnMute').classList.toggle('muted', audio.muted || audio.volume === 0);
+    $$('.vol-range').forEach(function (r) {
+      r.value = v;
+      r.style.setProperty('--p', (v * 100) + '%');
+    });
+    $('volPct').textContent = Math.round(v * 100) + '%';
+    $$('.mute-btn').forEach(function (b) { b.classList.toggle('muted', audio.muted || audio.volume === 0); });
   }
 
+  var LOSSLESS = { flac: 1, wav: 1, aif: 1, aiff: 1, caf: 1 };
   function updateNowPlaying() {
     var t = state.current;
-    $('npTitle').textContent = t ? t.title : 'Not playing';
-    $('npSub').textContent = t ? t.artist + ' — ' + t.album : 'Pick a song to start';
+    var sub = t ? t.artist + ' — ' + t.album : 'Pick a song to start';
+    $('npTitle').textContent = $('stTitle').textContent = t ? t.title : 'Not playing';
+    $('npSub').textContent = $('stSub').textContent = sub;
     $('npvTitle').textContent = t ? t.title : '';
-    $('npvSub').textContent = t ? t.artist + ' — ' + t.album : '';
+    $('npvSub').textContent = t ? sub : '';
+    $('stFormat').textContent = t ? t.ext.toUpperCase() + (LOSSLESS[t.ext] ? ' · LOSSLESS' : '') : '';
     document.title = t ? t.title + ' · ' + t.artist : 'Tunebox';
+    updateFavButtons();
     updateUpNext();
 
-    var art = $('npArt'), big = $('npvArt');
-    art.setAttribute('data-k', t ? t.albumKey : '');
-    big.setAttribute('data-k', t ? t.albumKey : '');
-    if (!t) { art.innerHTML = ''; big.innerHTML = ''; updateTime(); return; }
-    paintCover(art, t, t.album);
-    paintCover(big, t, t.album);
+    var arts = [$('npArt'), $('npvArt'), $('stArt')];
+    arts.forEach(function (el) { el.setAttribute('data-k', t ? t.albumKey : ''); });
+    if (!t) { arts.forEach(function (el) { el.innerHTML = ''; }); updateTime(); return; }
+    arts.forEach(function (el) { paintCover(el, t, t.album); });
 
     var ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
     if (ms && window.MediaMetadata) ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album });
@@ -1029,7 +1048,169 @@
     else if (state.qIndex + 1 < state.queue.length) nx = state.byId.get(state.queue[state.qIndex + 1]);
     else if (state.repeat === 'all' && state.queue.length) nx = state.byId.get(state.queue[0]);
     $('npvNext').innerHTML = nx ? 'Up next: <b>' + esc(nx.title) + '</b> · ' + esc(nx.artist) : '';
+
+    // the short "Up Next" list in the Now Playing panel
+    var html = '', n = 0;
+    for (var i = state.qIndex + 1; i < state.queue.length && n < 6; i++, n++) {
+      var q = state.byId.get(state.queue[i]);
+      if (!q) continue;
+      html += '<button class="qrow" data-q="' + i + '">' +
+        '<div class="thumb cover">' + coverInner(coverSync.has(q.albumKey) ? coverSync.get(q.albumKey) : undefined, q.album) + '</div>' +
+        '<div class="tt"><div class="t1">' + esc(q.title) + '</div><div class="t2">' + esc(q.artist) + '</div></div>' +
+        '<span class="qt">' + (q.duration ? fmtTime(q.duration) : '') + '</span></button>';
+      if (!coverSync.has(q.albumKey)) getCover(q).then(upNextSoon);
+    }
+    $('stNext').innerHTML = html || '<div class="upnext-empty">' + (state.current ? 'Nothing else queued.' : 'Play something to fill your queue.') + '</div>';
   }
+  var upNextSoon = throttle(function () { updateUpNext(); }, 400);
+
+  /* ---------------- favourites ---------------- */
+  var favs = {};
+  try { (JSON.parse(localStorage.getItem('tunebox.favs') || '[]') || []).forEach(function (p) { favs[p] = 1; }); } catch (e) { /* ignore */ }
+  var HEART_SMALL = '<svg class="heart" viewBox="0 0 24 24"><path fill="currentColor" d="m12 21.4-1.5-1.3C5.4 15.4 2 12.3 2 8.5 2 5.4 4.4 3 7.5 3c1.7 0 3.4.8 4.5 2.1C13.1 3.8 14.8 3 16.5 3 19.6 3 22 5.4 22 8.5c0 3.8-3.4 6.9-8.5 11.5z"/></svg>';
+  function isFav(t) { return !!favs[t.path]; }
+  function favCount() {
+    var n = 0;
+    for (var i = 0; i < state.tracks.length; i++) if (favs[state.tracks[i].path]) n++;
+    return n;
+  }
+  function updateFavButtons() {
+    var on = !!(state.current && isFav(state.current));
+    $$('[data-cmd="fav"]').forEach(function (b) { b.classList.toggle('on', on); });
+  }
+  function toggleFav() {
+    var t = state.current;
+    if (!t) return;
+    if (favs[t.path]) delete favs[t.path]; else favs[t.path] = 1;
+    try { localStorage.setItem('tunebox.favs', JSON.stringify(Object.keys(favs))); } catch (e) { /* ignore */ }
+    updateFavButtons();
+    $('countFavs').textContent = favCount() || '';
+    if (state.view === 'favorites') { invalidate(); renderAll(); } else renderRows();
+    toast(favs[t.path] ? 'Added to Favourites' : 'Removed from Favourites', 1400);
+  }
+
+  /* ---------------- equalizer + visualizer (Web Audio) ---------------- */
+  // Built on first play (browsers require a click first). Skipped on iPhone/iPad, where routing
+  // audio through Web Audio can stop playback when the screen locks.
+  var ac = null, eqNodes = null, analyser = null, freq = null;
+  var EQ_PRESETS = {
+    flat: [0, 0, 0], warm: [4, 1, -2], bass: [7, -1, 1],
+    vocal: [-2, 4, 1], night: [-3, 2, -4], bright: [-1, 0, 5]
+  };
+  var eq = settings.eq && settings.eq.length === 3 ? settings.eq : [0, 0, 0];
+
+  function ensureAudioGraph() {
+    if (ac || IS_IOS) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      ac = new AC();
+      var src = ac.createMediaElementSource(audio);
+      var bass = ac.createBiquadFilter(); bass.type = 'lowshelf'; bass.frequency.value = 180;
+      var mid = ac.createBiquadFilter(); mid.type = 'peaking'; mid.frequency.value = 1000; mid.Q.value = 0.9;
+      var treble = ac.createBiquadFilter(); treble.type = 'highshelf'; treble.frequency.value = 4200;
+      analyser = ac.createAnalyser();
+      analyser.fftSize = 128;
+      analyser.smoothingTimeConstant = 0.8;
+      freq = new Uint8Array(analyser.frequencyBinCount);
+      src.connect(bass); bass.connect(mid); mid.connect(treble); treble.connect(analyser); analyser.connect(ac.destination);
+      eqNodes = [bass, mid, treble];
+      applyEq();
+    } catch (e) {
+      ac = null; eqNodes = null; analyser = null;
+    }
+  }
+  function applyEq() {
+    if (!eqNodes) return;
+    for (var i = 0; i < 3; i++) eqNodes[i].gain.setTargetAtTime(eq[i], ac.currentTime, 0.05);
+  }
+  function renderEq() {
+    var ids = ['eqBass', 'eqMid', 'eqTreble'];
+    ids.forEach(function (id, i) {
+      var r = $(id);
+      r.value = eq[i];
+      r.style.setProperty('--p', ((eq[i] + 12) / 24 * 100) + '%');
+      $(id + 'Val').textContent = (eq[i] > 0 ? '+' : '') + eq[i] + ' dB';
+    });
+    var key = '';
+    Object.keys(EQ_PRESETS).forEach(function (k) { if (EQ_PRESETS[k].join() === eq.join()) key = k; });
+    $$('#eqPresets button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-eq') === key); });
+    $('eqNote').textContent = IS_IOS ? 'The equalizer isn’t available on iPhone / iPad.' : '';
+  }
+  function setEq(vals) {
+    eq = vals.slice();
+    settings.eq = eq;
+    saveSettings();
+    applyEq();
+    renderEq();
+  }
+  function toggleEqPanel(force) {
+    var p = $('eqPanel');
+    var show = typeof force === 'boolean' ? force : p.hidden;
+    p.hidden = !show;
+    if (show) renderEq();
+    $$('[data-cmd="eq"], #btnEq').forEach(function (b) { b.classList.toggle('on', show); });
+  }
+
+  var viz = $('viz'), vctx = viz.getContext('2d');
+  var BARS = 32, barH = new Float32Array(BARS), vizRunning = false, vizFrame = 0, vizPhase = 0;
+  function vizVisible() { return viz.offsetParent !== null && !document.hidden; }
+  function startViz() {
+    if (vizRunning) return;
+    vizRunning = true;
+    requestAnimationFrame(drawViz);
+  }
+  function drawViz() {
+    vizFrame++;
+    var playing = !audio.paused;
+    if (!vizVisible()) { vizRunning = false; return; }
+    if (vizFrame % 2 === 0) { // ~30 fps is plenty and halves the work on older Macs
+      var w = viz.width, h = viz.height, gap = 6;
+      var bw = (w - gap * (BARS - 1)) / BARS;
+      vctx.clearRect(0, 0, w, h);
+      var cs = getComputedStyle(document.documentElement);
+      var g = vctx.createLinearGradient(0, 0, w, 0);
+      g.addColorStop(0, 'rgb(' + cs.getPropertyValue('--tint').trim() + ')');
+      g.addColorStop(1, 'rgb(' + cs.getPropertyValue('--tint2').trim() + ')');
+      vctx.fillStyle = g;
+      if (analyser && playing) analyser.getByteFrequencyData(freq);
+      vizPhase += playing ? 0.12 : 0;
+      var settled = true;
+      for (var i = 0; i < BARS; i++) {
+        var target = 6;
+        if (playing) {
+          var centre = 1 - Math.abs((i - BARS / 2) / (BARS / 2)) * 0.5;
+          if (analyser) {
+            var bin = Math.min(freq.length - 1, Math.floor(i / BARS * 30) + 1);
+            target = Math.max(6, (freq[bin] / 255) * h * centre + (Math.sin(vizPhase + i * 0.45) * 0.5 + 0.5) * 8);
+          } else {
+            target = Math.max(6, (Math.sin(vizPhase + i * 0.5) * 0.5 + 0.5) * h * 0.6 * centre);
+          }
+        }
+        barH[i] += (target - barH[i]) * 0.25;
+        if (Math.abs(barH[i] - target) > 0.5) settled = false;
+        var bh = Math.min(h, barH[i]);
+        vctx.fillRect(i * (bw + gap), (h - bh) / 2, bw, bh);
+      }
+      if (!playing && settled) { vizRunning = false; return; } // stop the loop while paused
+    }
+    requestAnimationFrame(drawViz);
+  }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) startViz(); });
+
+  /* ---------------- theme ---------------- */
+  function applyTheme() {
+    if (settings.theme) document.documentElement.setAttribute('data-theme', settings.theme);
+    else document.documentElement.removeAttribute('data-theme');
+  }
+  function toggleTheme() {
+    var cur = settings.theme || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    settings.theme = cur === 'light' ? 'dark' : 'light';
+    saveSettings();
+    applyTheme();
+    toast(settings.theme === 'light' ? 'Light mode' : 'Dark mode', 1200);
+  }
+  applyTheme();
 
   function updateModes() {
     $$('[data-cmd="shuffle"]').forEach(function (b) { b.classList.toggle('on', state.shuffle); });
@@ -1296,7 +1477,10 @@
     repeat: cycleRepeat,
     queue: function () { if (state.view === 'queue') goBack(); else setView('queue'); },
     'play-view': function () { playIds(getList(), 0); },
-    'shuffle-view': function () { var ids = getList(); playIds(ids, Math.floor(Math.random() * ids.length), true); }
+    'shuffle-view': function () { var ids = getList(); playIds(ids, Math.floor(Math.random() * ids.length), true); },
+    fav: toggleFav,
+    fullscreen: function () { if ($('npView').hidden) openNowPlaying(); else closeNowPlaying(); },
+    eq: function () { toggleEqPanel(); }
   };
   document.addEventListener('click', function (e) {
     var b = e.target.closest('[data-cmd]');
@@ -1325,11 +1509,37 @@
   $('btnBack').addEventListener('click', goBack);
   $('npOpen').addEventListener('click', openNowPlaying);
   $('npClose').addEventListener('click', closeNowPlaying);
-  $('npvSub').addEventListener('click', function () { if (state.current) setView('album', state.current.albumKey); });
+  function goToCurrentAlbum() { if (state.current) setView('album', state.current.albumKey); }
+  $('npvSub').addEventListener('click', goToCurrentAlbum);
+  $('stSub').addEventListener('click', goToCurrentAlbum);
+  $('stNext').addEventListener('click', function (e) {
+    var q = e.target.closest('.qrow');
+    if (!q) return;
+    state.qIndex = +q.getAttribute('data-q');
+    loadTrack(state.byId.get(state.queue[state.qIndex]), true);
+  });
+
+  $('btnEq').addEventListener('click', function () { toggleEqPanel(); });
+  $('eqClose').addEventListener('click', function () { toggleEqPanel(false); });
+  $('eqPresets').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-eq]');
+    if (b) setEq(EQ_PRESETS[b.getAttribute('data-eq')]);
+  });
+  ['eqBass', 'eqMid', 'eqTreble'].forEach(function (id, i) {
+    $(id).addEventListener('input', function () {
+      var v = eq.slice();
+      v[i] = +this.value;
+      setEq(v);
+    });
+  });
+  $('btnTheme').addEventListener('click', toggleTheme);
 
   var searchTimer;
-  $('search').addEventListener('input', function () {
+  ['search', 'search2'].forEach(function (id) { $(id).addEventListener('input', onSearch); });
+  function onSearch() {
     var val = this.value;
+    var other = this.id === 'search' ? $('search2') : $('search');
+    other.value = val;
     clearTimeout(searchTimer);
     searchTimer = setTimeout(function () {
       state.filter = val.trim();
@@ -1339,7 +1549,7 @@
       }
       renderAll();
     }, 150);
-  });
+  }
 
   $('slHead').addEventListener('click', function (e) {
     var c = e.target.closest('[data-sort]');
@@ -1407,12 +1617,16 @@
     else setView('artist', a.name);
   });
 
-  $('btnMute').addEventListener('click', function () {
-    if (audio.volume === 0) { audio.volume = 0.5; audio.muted = false; } else audio.muted = !audio.muted;
+  $$('.mute-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (audio.volume === 0) { audio.volume = 0.5; audio.muted = false; } else audio.muted = !audio.muted;
+    });
   });
-  $('volume').addEventListener('input', function () {
-    audio.volume = +this.value;
-    audio.muted = false;
+  $$('.vol-range').forEach(function (r) {
+    r.addEventListener('input', function () {
+      audio.volume = +this.value;
+      audio.muted = false;
+    });
   });
   $$('.seek-range').forEach(function (r) {
     r.addEventListener('input', function () {
@@ -1444,12 +1658,15 @@
     else if (k === 'ArrowLeft') { e.preventDefault(); audio.currentTime = Math.max(0, audio.currentTime - 5); }
     else if (k === 'ArrowUp') { e.preventDefault(); audio.muted = false; audio.volume = Math.min(1, audio.volume + 0.05); }
     else if (k === 'ArrowDown') { e.preventDefault(); audio.volume = Math.max(0, audio.volume - 0.05); }
-    else if (k === '/') { e.preventDefault(); $('search').focus(); }
+    else if (k === '/') { e.preventDefault(); ($('search').offsetParent ? $('search') : $('search2')).focus(); }
     else if (k === 's' || k === 'S') toggleShuffle();
     else if (k === 'r' || k === 'R') cycleRepeat();
     else if (k === 'm' || k === 'M') audio.muted = !audio.muted;
     else if (k === 'f' || k === 'F') { if ($('npView').hidden) openNowPlaying(); else closeNowPlaying(); }
-    else if (k === 'Escape') closeNowPlaying();
+    else if (k === 'l' || k === 'L') toggleFav();
+    else if (k === 'e' || k === 'E') toggleEqPanel();
+    else if (k === 't' || k === 'T') toggleTheme();
+    else if (k === 'Escape') { closeNowPlaying(); toggleEqPanel(false); }
     else if (k === 'Enter' && state.selectedId) {
       var i = getList().indexOf(state.selectedId);
       if (i >= 0) playFromRow(i);
@@ -1481,6 +1698,7 @@
   }
 
   updateVolume();
+  startViz();
   updateModes();
   updateNowPlaying();
   renderAll();
