@@ -1759,3 +1759,11 @@ body.stage-on .toast { bottom: auto; top: calc(18px + env(safe-area-inset-top));
 .npv-ask > div { display: flex; margin-top: 10px; }
 .npv-ask .btn + .btn { margin-left: 8px; }
 .lyrics-mode .npv-ask { display: none; }
+/* "keep these songs on this phone?" */
+.store-opts { display: grid; grid-gap: 8px; }
+.store-opts .opt { text-align: left; padding: 12px 14px; }
+.store-opts .opt > b { display: block; font-size: 14px; margin-bottom: 3px; }
+.store-opts .opt small { display: block; font-weight: 400; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.store-opts .opt.rec { border-color: rgba(var(--tint), 0.6); background: rgba(var(--tint), 0.14); }
+.store-remember { display: flex; align-items: center; margin-top: 12px; font-size: 12.5px; color: var(--text-2); }
+.store-remember input { margin-right: 8px; }

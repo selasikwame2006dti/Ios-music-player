@@ -1115,6 +1115,7 @@
     if (!t) return;
     if (t.offline) {
       var root = rootOf(t), path = t.path;
+      if (t.offline === 'removed') { toast('Pick the “' + root + '” folder again to play this song.', 2600); $('dirInput').click(); return; }
       if (t.offline === 'locked') {
         unlockFolder(root).then(function (ok) { var nt = ok && state.byPath.get(path); if (nt && !nt.offline) loadTrack(nt, autoplay, startAt); });
         return;
@@ -2483,7 +2484,7 @@
     var had = folderStatus.get(name);
     folderStatus.set(name, { handle: handle.name ? handle : (had && had.handle), status: why });
     var n = 0;
-    state.tracks.forEach(function (t) { if (rootOf(t) === name && !t.offline) { t.offline = why; n++; } });
+    state.tracks.forEach(function (t) { if (rootOf(t) === name && !t.offline && !t.stored) { t.offline = why; n++; } });
     if (state.folders.indexOf(name) < 0) state.folders.push(name);
     return loadMetaCache().then(function (m) {
       m.forEach(function (r, path) {
@@ -3611,55 +3612,120 @@
   // a huge single copy can use so much memory that a phone closes other apps).
   var storeQueue = [], storing = false, storeDone = 0, storeTotal = 0;
   var KEEP_RE = /\.(mp3|m4a|m4b|aac|flac|wav|aiff?|ogg|oga|opus|webm|lrc|jpe?g|png)$/i;
+  function rememberPicked(root) {
+    var l = lsGet('tunebox.picked', []);
+    if (l.indexOf(root) < 0) { l.push(root); lsSet('tunebox.picked', l); }
+  }
+  // Android/Safari can't reopen a picked folder by themselves: show its songs (from the saved
+  // song info) as "pick again to reconnect" until the folder is chosen once more
+  function restorePickedFolders() {
+    if (hasFSA && !IS_PHONE) return;
+    var roots = lsGet('tunebox.picked', []);
+    if (!roots.length) return;
+    Promise.all(roots.map(function (r) { return folderMissing(r, 'removed'); })).then(function (counts) {
+      var waiting = roots.filter(function (r, i) { return counts[i] > 0; });
+      if (!waiting.length) return;
+      var n = counts.reduce(function (a, b) { return a + b; }, 0);
+      $('reopenText').innerHTML = plural(n, 'song') + ' from <b>' + waiting.map(esc).join('</b>, <b>') + '</b> need the folder picked again — your phone only lets Tunebox read it while it’s open.';
+      $('reopenBanner').setAttribute('data-root', waiting[0]);
+      $('btnReopen').textContent = 'Pick folder';
+      $('reopenBanner').hidden = false;
+      $('btnReopen').onclick = function () { $('dirInput').click(); };
+      $('btnForget').onclick = function () {
+        lsSet('tunebox.picked', lsGet('tunebox.picked', []).filter(function (r) { return waiting.indexOf(r) < 0; }));
+        $('reopenBanner').hidden = true;
+      };
+    });
+  }
+  function copyChoice(root) { var c = lsGet('tunebox.copyChoice', {}); return root ? c[root] : undefined; }
+  function setCopyChoice(root, v) { if (!root) return; var c = lsGet('tunebox.copyChoice', {}); c[root] = v; lsSet('tunebox.copyChoice', c); }
   function storeFiles(entries, opts) {
+    opts = opts || {};
     if (!keepFilesOn() || !entries.length) return;
+    var choice = copyChoice(opts.root);
+    if (choice === 'no' && !opts.confirmed) return;
+    if (choice === 'fit' && !opts.confirmed) opts = { root: opts.root, confirmed: true, fit: true };
     var list = entries.filter(function (e) { return KEEP_RE.test(e.file.name); });
     if (!list.length) return;
     // asking every file for its size is slow on phones, so estimate from a sample
     var sample = list.length > 60 ? list.filter(function (e, i) { return i % Math.ceil(list.length / 40) === 0; }) : list;
     var bytes = sample.reduce(function (n, e) { return n + (e.file.size || 0); }, 0) * (list.length / sample.length);
-    if (bytes > 400 * 1048576 && !(opts && opts.confirmed)) { askToStore(list, bytes); return; }
+    if (bytes > 400 * 1048576 && !opts.confirmed) { askToStore(list, bytes, opts.root); return; }
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {});
+    if (opts.fit) list = byPriority(list);
     storeQueue = storeQueue.concat(list);
     storeTotal += list.length;
-    pumpStore();
+    pumpStore(opts.fit);
+  }
+  // favourites first, then the songs you play most, then everything else
+  function byPriority(list) {
+    var score = function (e) {
+      var t = state.byPath.get(e.path);
+      if (!t) return 0;
+      var st = stats[t.path];
+      return (isFav(t) ? 1e6 : 0) + (st ? st.p * 10 - (st.s || 0) * 3 : 0);
+    };
+    // keep each song's .lrc and cover image next to it in the order
+    return list.map(function (e) { return { e: e, s: /\.(lrc|jpe?g|png)$/i.test(e.file.name) ? 5e5 : score(e) }; })
+      .sort(function (a, b) { return b.s - a.s; }).map(function (x) { return x.e; });
   }
   function fmtBytes(n) { return n > 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : Math.round(n / 1048576) + ' MB'; }
-  function askToStore(list, bytes) {
-    var go = function () { storeFiles(list, { confirmed: true }); };
+  function askToStore(list, bytes, root) {
     var est = navigator.storage && navigator.storage.estimate ? navigator.storage.estimate() : Promise.resolve(null);
     est.then(function (e) {
-      var free = e ? (e.quota || 0) - (e.usage || 0) : Infinity;
-      var fits = bytes < free * 0.85;
-      openModal('<h3>Keep these songs on this phone?</h3><p class="modal-sub">' + plural(list.length, 'song') + ' (' + fmtBytes(bytes) + '). ' +
-        'Keeping copies means they’re still here after you close Tunebox, even if the SD card or USB drive is removed. Copying happens slowly in the background so your phone stays smooth.' +
-        (fits ? '' : '<br><br><b>There isn’t enough free space for all of them.</b> Tunebox will copy what fits.') + '</p>' +
-        '<div class="modal-actions wrap"><button class="btn" data-close id="storeNo">Don’t copy — I’ll pick the folder again</button><button class="btn primary" id="storeYes">Keep copies</button></div>',
-        function (m) { m.querySelector('#storeYes').onclick = function () { closeModal(); go(); }; });
+      var free = e ? Math.max(0, (e.quota || 0) - (e.usage || 0)) : Infinity;
+      var fits = bytes < free * 0.8;
+      var name = root ? '“' + esc(root) + '”' : 'these songs';
+      openModal('<h3>' + (fits ? 'Keep these songs on this phone?' : 'Not enough space to copy them all') + '</h3>' +
+        '<p class="modal-sub">' + plural(list.length, 'song') + ' in ' + name + ' (about ' + fmtBytes(bytes) + ')' +
+        (isFinite(free) ? ', and about <b>' + fmtBytes(free) + '</b> free for Tunebox' : '') + '.</p>' +
+        '<div class="store-opts">' +
+          (fits ? '<button class="opt" data-store="yes"><b>Keep copies</b><small>Songs stay in Tunebox even if the SD card or USB drive is removed. Copied slowly in the background.</small></button>' : '') +
+          '<button class="opt' + (fits ? '' : ' rec') + '" data-store="no"><b>Play from the folder' + (fits ? '' : ' (recommended)') + '</b><small>Uses no space. Your songs, playlists and stats stay in Tunebox — after you reopen the app, tap <b>Pick folder</b> once to reconnect.</small></button>' +
+          (fits ? '' : '<button class="opt" data-store="fit"><b>Copy what fits</b><small>Favourites and most-played songs first, up to about ' + fmtBytes(free * 0.8) + '. The rest plays from the folder.</small></button>') +
+        '</div><label class="store-remember"><input type="checkbox" id="storeRemember" checked> Remember for this folder</label>',
+        function (m) {
+          m.onclick = function (ev) {
+            var b = ev.target.closest('[data-store]');
+            if (!b) return;
+            var v = b.getAttribute('data-store');
+            if (m.querySelector('#storeRemember').checked) setCopyChoice(root, v);
+            closeModal();
+            if (v === 'yes') storeFiles(list, { root: root, confirmed: true });
+            else if (v === 'fit') storeFiles(list, { root: root, confirmed: true, fit: true });
+            else toast('Playing from the folder. Tap “Pick folder” after reopening to reconnect.', 3500);
+          };
+        }, 'wide');
     });
   }
-  async function pumpStore() {
+  async function pumpStore(fit) {
     if (storing) return;
     storing = true;
     var db;
     try { db = await fdbOpen(); } catch (e) { storing = false; return; }
-    var full = false;
+    var full = false, budget = Infinity, used = 0;
+    if (fit && navigator.storage && navigator.storage.estimate) {
+      try { var est = await navigator.storage.estimate(); budget = Math.max(0, ((est.quota || 0) - (est.usage || 0)) * 0.8); } catch (e) { /* keep going */ }
+    }
     while (storeQueue.length && !full) {
       var e = storeQueue.shift();
+      used += e.file.size || 0;
+      if (used > budget) { full = true; toast('Copied what fits — the other ' + plural(storeQueue.length + 1, 'song') + ' play from the folder.', 4000); break; }
       await breathe();
       if (IS_PHONE && !audio.paused) await sleepMs(120);
+      var tt = state.byPath.get(e.path);
       try {
         await new Promise(function (res, rej) {
           var tx = db.transaction('files', 'readwrite');
           tx.objectStore('files').put({ blob: e.file, name: e.file.name, type: e.file.type, lm: e.file.lastModified }, e.path);
-          tx.oncomplete = res;
+          tx.oncomplete = function () { if (tt) tt.stored = true; res(); };
           tx.onerror = function () { rej(tx.error); };
           tx.onabort = function () { rej(tx.error); };
         });
       } catch (err) {
         if (err && (err.name === 'QuotaExceededError' || /quota/i.test(err.message || ''))) {
           full = true;
-          toast('Phone storage is full — ' + plural(storeQueue.length + 1, 'song') + ' weren’t copied.', 4500);
+          toast('Phone storage is full — the other ' + plural(storeQueue.length + 1, 'song') + ' play from the folder.', 4500);
         }
       }
       storeDone++;
@@ -5101,7 +5167,14 @@
     var fresh = r.entries.filter(function (e) { return !state.byPath.has(e.path); });
     var again = r.root && state.folders.indexOf(r.root) >= 0;
     ingest(r.entries, r.root, { rescan: again });
-    if (IS_PHONE) storeFiles(fresh); // phones can't re-open a folder later, so keep the songs
+    if (r.root) {
+      rememberPicked(r.root);
+      folderStatus.set(r.root, { status: 'ok' });
+      renderFolderList();
+      if ($('reopenBanner').getAttribute('data-root') === r.root) $('reopenBanner').hidden = true;
+    }
+    // phones can't re-open a folder later, so offer to keep the songs (unless you said no for this folder)
+    if (IS_PHONE) storeFiles(fresh, { root: r.root });
     this.value = '';
   });
   $('fileInput').addEventListener('change', function () {
@@ -5369,7 +5442,11 @@
     renderAll(true);
   });
   loadStoredFiles().then(function (entries) {
-    if (entries.length) ingest(entries, 'Saved on this device');
+    if (entries.length) {
+      ingest(entries, 'Saved on this device');
+      entries.forEach(function (e) { var t = state.byPath.get(e.path); if (t) t.stored = true; });
+    }
+    restorePickedFolders();
     receiveShared();
     receiveSync();
   });
