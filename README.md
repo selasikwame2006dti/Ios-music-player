@@ -48,7 +48,19 @@ Tip: bookmark the page so you can open it in one click.
 - **Edit song info and covers:** change titles, artists, albums, years, genres and album art. Changes are saved inside Tunebox, and your files are never modified. Use "Edit album" to change a whole album at once.
 - **Keep picked songs:** on phones, songs you add stay in Tunebox after you close it.
 - **Share to Tunebox (Android):** share songs from Files, WhatsApp and other apps straight into Tunebox.
-- **Send to another device:** a QR code or link copies your playlists, favourites, equalizer and look to your phone or PC. You can also export or import a backup file.
+- **Copy settings to another device:** a QR code or link copies your playlists, favourites, equalizer and look to your phone or PC. You can also export or import a backup file.
+
+**Connect devices** (sidebar → Connect devices, or Browse on a phone)
+- **Phone as a remote:** play, pause, skip, change the volume, turn on the DJ and search the other device's library to play or queue songs.
+- **Send songs:** send the current song, an album, your favourites or any files straight to the other device, where they're saved.
+- **Live sync:** playlists, favourites and your sound settings stay the same on both devices.
+- **Party mode:** friends scan a QR code and add songs to your queue from their phones. Guests can only add songs unless you let them play and skip.
+- **No shared Wi-Fi needed.** Tap **Show my code** on one device and scan it with the other device's camera.
+  - When both devices are online, they find each other through the free PeerJS relay. They can be on different networks, such as a PC on your phone's hotspot.
+  - When offline (the same Wi-Fi or a hotspot without internet), the second device shows a reply code. Tap **Scan their reply** on the first device and scan it.
+  - You can also copy and paste the codes instead of scanning.
+  - Devices connect directly and the connection is encrypted. Your music never goes through the relay.
+- Party mode needs internet on the host device.
 
 **Library**
 - Songs, Albums, Artists and Favourites
@@ -110,6 +122,7 @@ Plain HTML, CSS and JavaScript, with no frameworks and no build step:
 - `index.html`: the page layout
 - `css/style.css`: styles, written to work in Safari 14+ and Chrome 90+
 - `js/metadata.js`: a small tag reader for ID3 (MP3), MP4 atoms (M4A) and Vorbis comments (FLAC)
-- `js/app.js`: the library, views, player, folder access and keyboard shortcuts
+- `js/app.js`: the library, views, player, folder access, device connections and keyboard shortcuts
+- `js/vendor/`: [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT), [jsQR](https://github.com/cozmo/jsQR) (Apache-2.0) for scanning codes, and [PeerJS](https://github.com/peers/peerjs) (MIT) for finding devices over the internet
 
 The scripts are ordinary script files, not modules, so the page works when opened straight from disk (`file://`).
