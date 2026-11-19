@@ -697,6 +697,7 @@
   function showStage(on) {
     state.stage = !!on && !!state.current;
     $('npStage').hidden = !state.stage;
+    document.body.classList.toggle('stage-on', state.stage);
     if (!state.stage) restoreLyrics();
     else { lyricIdx = -1; updateLyricHighlight(); lyricLoop(); }
     updateNavActive();
@@ -2038,7 +2039,7 @@
       if (state.current !== t) return;
       state.lyrics = txt ? parseLyrics(txt) : null;
       renderLyrics();
-      if (!state.lyrics) noLocalLyrics(t);
+      if (!state.lyrics || !state.lyrics.synced) noLocalLyrics(t);
     }).catch(function () { if (state.current === t) noLocalLyrics(t); });
   }
 
@@ -2074,7 +2075,7 @@
       v.innerHTML = (big ? '<div class="lyr-pad"></div>' : '') + L.lines.map(function (l, i) {
         return l.text ? lineHtml(l, i, 'lyric-line') : '<div class="lyric-gap"></div>';
       }).join('') + (big ? '<div class="lyr-pad end"></div>' : '') +
-        (L.synced ? '' : '<div class="lyr-note">These lyrics aren’t timed, so they scroll with the song.</div>') +
+        (L.synced ? '' : '<div class="lyr-note">These lyrics aren’t timed, so they scroll with the song. <button class="link-btn" data-lyr="online">Find timed lyrics online</button></div>') +
         (L.online ? '<div class="lyr-note">Lyrics from LRCLIB</div>' : '');
     });
     renderLiveLine(-1);
@@ -2087,12 +2088,7 @@
   function renderLiveLine(idx) {
     var box = $('npvLive'), L = state.lyrics;
     if (!L || !L.lines.length) { box.innerHTML = ''; return; }
-    if (!L.synced) {
-      var first = L.lines.filter(function (l) { return l.text; }).slice(0, 2).map(function (l) { return l.text; });
-      box.innerHTML = '<div class="live-cur plain">' + esc(first.join(' / ')) + '</div><div class="live-next">Tap to read the lyrics</div>';
-      box.setAttribute('data-idx', 'plain');
-      return;
-    }
+    if (!L.synced) { box.innerHTML = ''; box.setAttribute('data-idx', 'plain'); return; }
     var cur = idx >= 0 ? L.lines[idx] : null, nx = L.lines[idx + 1];
     var t = audio.currentTime;
     var resting = !cur || (t > cur.end - 0.05 && nx && nx.t - t > 3);
@@ -4686,10 +4682,12 @@
   function onlineLyricsFor(t, manual) {
     if (manual) { $$('[data-lyr="online"]').forEach(function (b) { b.textContent = 'Looking…'; b.disabled = true; }); }
     return fetchOnlineLyrics(t).then(function (txt) {
-      if (state.current !== t || (state.lyrics && !state.lyrics.online)) return;
-      if (!txt) { if (manual) { toast('No lyrics found online for this song.', 2200); renderLyrics(); } return; }
-      state.lyrics = parseLyrics(txt);
-      if (state.lyrics) state.lyrics.online = true;
+      if (state.current !== t || (state.lyrics && state.lyrics.synced && !state.lyrics.online)) return;
+      var got = txt ? parseLyrics(txt) : null;
+      // only replace lyrics the song already has with better (timed) ones
+      if (!got || (state.lyrics && !got.synced)) { if (manual) { toast(txt ? 'Only untimed lyrics found online.' : 'No lyrics found online for this song.', 2200); renderLyrics(); } return; }
+      state.lyrics = got;
+      state.lyrics.online = true;
       renderLyrics();
     });
   }

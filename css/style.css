@@ -1549,7 +1549,7 @@ body.view-remote #minibar { display: none; }
    Lyrics: word-by-word highlight, live line in full screen, big lyrics view
    ===================================================================== */
 :root { --lyr-off: var(--text-3); }
-.lw { display: inline-block; -webkit-transition: color 0.18s; transition: color 0.18s; }
+.lw { display: inline-block; }
 .lw.now { padding-bottom: 0.14em; margin-bottom: -0.14em; }
 .lyric-line.active .lw, .live-cur .lw { color: var(--lyr-off); }
 .lyric-line.active .lw.sung, .live-cur .lw.sung { color: var(--text); }
@@ -1572,17 +1572,28 @@ body.view-remote #minibar { display: none; }
 .lyrics-box.lyrics-plain .lyric-line { font-weight: 600; color: var(--text-2); padding: 2px 8px; }
 .lyr-note { font-size: 11px; color: var(--text-3); padding: 14px 8px 0; }
 
-/* live line under the title in full screen */
+/* the line being sung, like subtitles at the bottom of the full-screen player */
 .npv-head { min-width: 0; }
-.npv-live { display: none; width: 100%; margin-top: 18px; padding: 12px 14px; border-radius: 16px; border: 1px solid var(--border);
-  background: var(--glass); color: var(--text); text-align: left; cursor: pointer; font: inherit; min-height: 84px;
-  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
-.npv-live:hover { background: var(--glass-2); }
-.has-lyrics .npv-live { display: block; }
-.live-cur { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.24; overflow: hidden; max-height: 2.48em;
-  -webkit-animation: lyrIn 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); animation: lyrIn 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
-.live-cur.plain { font-size: 16px; font-weight: 600; color: var(--text-2); }
-.live-next { margin-top: 6px; font-size: 13.5px; font-weight: 600; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.2em; }
+.npv-live { display: none; border: 0; background: none; color: var(--text); font: inherit; cursor: pointer; padding: 0; }
+.lyrics-synced-on .npv-live { display: block; }
+.lyrics-mode .npv-live { display: none !important; }
+.live-cur { font-weight: 800; letter-spacing: -0.02em; line-height: 1.22; overflow: hidden; max-height: 2.5em;
+  -webkit-animation: lyrIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); animation: lyrIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.live-next { font-weight: 600; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.25em; }
+.npv-live:hover .live-next { color: var(--text-2); }
+@media (min-width: 981px) {
+  .npv-live { position: absolute; left: 50%; bottom: 6vh; width: min(920px, 86vw); -webkit-transform: translateX(-50%); transform: translateX(-50%); text-align: center; }
+  .live-cur { font-size: clamp(24px, 2.5vw, 36px); }
+  .live-next { font-size: clamp(15px, 1.25vw, 19px); margin-top: 10px; }
+  /* lift the cover and controls a little so the words have room */
+  .lyrics-synced-on:not(.lyrics-mode) .npv-inner { padding-bottom: calc(48px + 15vh); }
+  .lyrics-synced-on:not(.lyrics-mode) .npv-art { width: min(52vh, 460px); height: min(52vh, 460px); }
+}
+@media (max-width: 980px) {
+  .npv-live { width: 100%; text-align: left; margin-top: 16px; min-height: 3.6em; }
+  .live-cur { font-size: 20px; }
+  .live-next { font-size: 14px; margin-top: 6px; }
+}
 @-webkit-keyframes lyrIn { from { opacity: 0; -webkit-transform: translateY(10px); } }
 @keyframes lyrIn { from { opacity: 0; transform: translateY(10px); } }
 .dots { display: inline-flex; align-items: center; height: 27px; }
@@ -1617,7 +1628,7 @@ body.view-remote #minibar { display: none; }
   -webkit-transform-origin: left center; transform-origin: left center; -webkit-transform: scale(0.97); transform: scale(0.97);
   -webkit-transition: opacity 0.4s, -webkit-transform 0.4s, background 0.2s; transition: opacity 0.4s, transform 0.4s, background 0.2s;
 }
-.npv-lyrics .lyric-line:hover { opacity: 0.6; background: var(--hover); }
+@media (hover: hover) { .npv-lyrics .lyric-line:hover { opacity: 0.6; background: var(--hover); } }
 .npv-lyrics .lyric-line.active { opacity: 1; -webkit-transform: none; transform: none; }
 .npv-lyrics .lyric-line.past { opacity: 0.22; }
 .npv-lyrics .lyric-gap { height: 26px; }
@@ -1626,8 +1637,6 @@ body.view-remote #minibar { display: none; }
 .npv-lyrics .insp-empty { font-size: 15px; padding-top: 30vh; }
 
 @media (max-width: 980px) {
-  .live-cur { font-size: 19px; }
-  .npv-live { min-height: 74px; margin-top: 14px; }
   .nowplaying.lyrics-mode .npv-inner {
     height: 100%; grid-template-columns: 60px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto;
     -webkit-column-gap: 14px; column-gap: 14px; align-content: stretch; padding: 58px 18px calc(18px + env(safe-area-inset-bottom));
@@ -1703,3 +1712,17 @@ body.view-remote #minibar { display: none; }
   .car-btns .car-play { width: 116px; height: 116px; }
 }
 body.car-on .toast { bottom: auto; top: calc(86px + env(safe-area-inset-top)); }
+/* full screen on phones: never push the cover off the top; leave room for the lyric line */
+@media (max-width: 980px) {
+  .nowplaying:not(.lyrics-mode) .npv-inner { justify-content: flex-start; overflow-y: auto; }
+  .nowplaying:not(.lyrics-mode) .npv-art { margin-top: auto; }
+  .nowplaying:not(.lyrics-mode) .npv-side { margin-bottom: auto; }
+  .lyrics-synced-on:not(.lyrics-mode) .npv-art { width: min(34vh, 74vw); height: min(34vh, 74vw); }
+  .lyrics-synced-on:not(.lyrics-mode) .npv-side { margin-top: 20px; }
+}
+/* messages go to the top while the full-screen player is open, away from the lyrics */
+body.stage-on .toast { bottom: auto; top: calc(18px + env(safe-area-inset-top)); }
+
+/* big lyrics view: keep the left side calm — only the essentials */
+.lyrics-mode .npv-actions [data-cmd="dj"], .lyrics-mode .npv-actions [data-cmd="eq"], .lyrics-mode .npv-actions [data-cmd="sleep"],
+.lyrics-mode .npv-actions [data-cmd="output"], .lyrics-mode .npv-actions [data-cmd="car"] { display: none; }

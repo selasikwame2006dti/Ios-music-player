@@ -1,12 +1,12 @@
 /* Tunebox offline support: keeps a copy of the app so it opens with no internet.
    Your music is never cached here — it is always read straight from your own files. */
-var CACHE = 'tunebox-v10';
+var CACHE = 'tunebox-v11';
 var ASSETS = [
   './',
   'index.html',
-  'css/style.css',
-  'js/app.js',
-  'js/metadata.js',
+  'css/style.css?v=11',
+  'js/app.js?v=11',
+  'js/metadata.js?v=11',
   'js/vendor/qrcode.js', 'js/vendor/jsqr.js', 'js/vendor/peerjs.js',
   'icon.svg',
   'icons/icon-192.png',
@@ -15,7 +15,8 @@ var ASSETS = [
 ];
 
 self.addEventListener('install', function (e) {
-  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(ASSETS); }).then(function () { return self.skipWaiting(); }));
+  // cache: 'reload' skips the browser's own cache, so a new version never keeps an old file
+  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(ASSETS.map(function (u) { return new Request(u, { cache: 'reload' }); })); }).then(function () { return self.skipWaiting(); }));
 });
 
 self.addEventListener('activate', function (e) {
@@ -66,12 +67,12 @@ self.addEventListener('fetch', function (e) {
         return hit || (req.mode === 'navigate' ? cache.match('index.html') : undefined);
       });
     };
-    var net = fetch(req).then(function (res) {
+    var net = fetch(req, { cache: 'no-cache' }).then(function (res) {
       if (res && res.ok) cache.put(req, res.clone());
       return res;
     });
     // don't wait forever on a bad connection
-    var timeout = new Promise(function (resolve) { setTimeout(resolve, 3500); }).then(fromCache);
+    var timeout = new Promise(function (resolve) { setTimeout(resolve, navigator.onLine === false ? 0 : 8000); }).then(fromCache);
     return Promise.race([net.catch(fromCache), timeout.then(function (r) { return r || net; })]);
   }));
 });
