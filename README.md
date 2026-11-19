@@ -38,6 +38,18 @@ Tip: bookmark the page so you can open it in one click.
 - **Vibes:** Slowed + Reverb, Chill, Sped Up, Nightcore and Concert Hall, plus free speed and reverb controls
 - Background play: keeps going in other tabs, and works with the Mac media keys and the Now Playing widget
 
+**New in this update**
+- **Playlists:** right-click any song, or tap **⋯**, then choose Add to playlist. Your playlists appear in the sidebar. There are also 4 **smart playlists** that update themselves: Recently Played, Most Played, Not Heard in a While and Never Played.
+- **Song menu:** Play next, Add to Up Next, Add to playlist, Favourite, Start DJ from this song, Go to album or artist, and Edit song info.
+- **Sleep timer** (moon icon in Now Playing): 5 minutes to 1½ hours, or the end of the current song. The music fades out gently before stopping.
+- **Volume levelling:** quiet and loud songs play at the same level. Tunebox uses ReplayGain tags when a file has them, and otherwise measures each song. There's also an optional "Smooth loudness peaks" setting.
+- **Tempo detection:** each song's beat is measured in the background, so the DJ can match tempos even without BPM tags.
+- **Listening Stats:** total time and this week, a 14-day chart, and your top songs, artists and genres. Everything is counted on your device.
+- **Edit song info and covers:** change titles, artists, albums, years, genres and album art. Changes are saved inside Tunebox, and your files are never modified. Use "Edit album" to change a whole album at once.
+- **Keep picked songs:** on phones, songs you add stay in Tunebox after you close it.
+- **Share to Tunebox (Android):** share songs from Files, WhatsApp and other apps straight into Tunebox.
+- **Send to another device:** a QR code or link copies your playlists, favourites, equalizer and look to your phone or PC. You can also export or import a backup file.
+
 **Library**
 - Songs, Albums, Artists and Favourites
 - Reads tags, album art, genre, BPM and lyrics from MP3, M4A and FLAC files. Synced lyrics come from `.lrc` files saved next to your songs.

@@ -145,6 +145,14 @@ var Meta = (function () {
       }
 
       var key = ID3_MAP[id];
+      if ((id === 'TXXX' || id === 'TXX') && data.length > 2) {
+        var te = data[0], dEndX = termEnd(te, data, 1);
+        if (dEndX > 0) {
+          var desc = decodeText(te, data.subarray(1, dEndX)).replace(/[\u0000\uFEFF]/g, '').toUpperCase();
+          if (desc === 'REPLAYGAIN_TRACK_GAIN' && !out.rg) out.rg = decodeText(te, data.subarray(dEndX));
+        }
+        continue;
+      }
       if (key) {
         if (!out[key]) out[key] = tidy(decodeText(data[0], data.subarray(1)));
       } else if (wantCover && !out.lyrics && (id === 'USLT' || id === 'ULT') && data.length > 4) {
@@ -318,6 +326,7 @@ var Meta = (function () {
           else if (k === 'DISCNUMBER' && !out.disc) out.disc = v;
           else if (k === 'DATE' && !out.year) out.year = v;
           else if (k === 'GENRE' && !out.genre) out.genre = v;
+          else if (k === 'REPLAYGAIN_TRACK_GAIN' && !out.rg) out.rg = v;
           else if (k === 'BPM' && !out.bpm) out.bpm = v;
           else if ((k === 'LYRICS' || k === 'UNSYNCEDLYRICS' || k === 'SYNCEDLYRICS') && !out.lyrics) out.lyrics = kv.slice(eq + 1);
         }
@@ -357,6 +366,7 @@ var Meta = (function () {
       year: year(raw.year),
       genre: genreName(raw.genre),
       bpm: num(raw.bpm),
+      rg: raw.rg ? (parseFloat(String(raw.rg).replace(/[^0-9.+-]/g, '')) || 0) : null,
       cover: raw.cover || null,
       lyrics: raw.lyrics || ''
     };
