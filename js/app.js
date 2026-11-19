@@ -42,7 +42,11 @@
     shuffle: false,
     repeat: 'off',             // off | all | one
     current: null,
-    selectedId: null
+    selectedId: null,
+    stage: false,              // Now Playing stage shown in the centre
+    inspTab: 'queue',          // queue | lyrics
+    lrcFiles: new Map(),       // "folder/name" (lower case, no extension) -> .lrc File
+    lyrics: null               // { lines: [{t, text}], synced: bool } for the current track
   };
   var nextId = 1;
 
@@ -56,8 +60,8 @@
   function saveSettings() {
     settings.shuffle = state.shuffle;
     settings.repeat = state.repeat;
-    settings.volume = audio.volume;
-    settings.muted = audio.muted;
+    settings.volume = vol;
+    settings.muted = muted;
     try { localStorage.setItem('tunebox.settings', JSON.stringify(settings)); } catch (e) { /* ignore */ }
   }
 
@@ -165,6 +169,8 @@
       track: tn ? parseInt(tn[1], 10) : 0,
       disc: 0,
       year: 0,
+      genre: '',
+      bpm: 0,
       duration: 0,
       tagged: false,
       broken: false,
@@ -197,6 +203,7 @@
         if (!prev || sc > prev.score) state.folderImages.set(dir, { file: e.file, score: sc });
         continue;
       }
+      if (ext === 'lrc') { state.lrcFiles.set(e.path.replace(/\.[^.\/]+$/, '').toLowerCase(), e.file); continue; }
       if (ext === 'm4p') { skippedDrm++; continue; }
       if (AUDIO_EXT.indexOf(ext) < 0) continue;
       if (state.byPath.has(e.path)) continue;
@@ -214,14 +221,23 @@
     if (!added.length && !skippedDrm) toast('No playable music found there.');
     if (added.length) {
       toast('Added ' + plural(added.length, 'song') + '.');
-      scanTags(added);
-      maybeRestoreLast();
+      loadMetaCache().then(function () {
+        var need = applyCache(added);
+        invalidate();
+        renderAll(true);
+        if (need.length) scanTags(need);
+        else { setStatus(plural(state.tracks.length, 'song')); startDurations(); }
+        maybeRestoreLast();
+        djFill();
+      });
     }
   }
 
   function clearLibrary() {
     stop();
-    closeNowPlaying();
+    showStage(false);
+    state.lrcFiles = new Map();
+    state.lyrics = null;
     state.tracks = [];
     state.byId = new Map();
     state.byPath = new Map();
@@ -266,8 +282,11 @@
       if (m.track) t.track = m.track;
       if (m.disc) t.disc = m.disc;
       if (m.year) t.year = m.year;
+      if (m.genre) t.genre = m.genre;
+      if (m.bpm) t.bpm = m.bpm;
       t.tagged = true;
       computeAlbumKey(t);
+      markMetaDirty(t);
       tagDone++;
       if (tagDone % 25 === 0 || !tagQueue.length) setStatus('Reading song info… ' + tagDone + ' / ' + tagTotal);
       refreshSoon();
@@ -300,6 +319,7 @@
       var t = durQueue.shift();
       if (t.duration) continue;
       t.duration = await probeDuration(t.file);
+      if (t.duration) markMetaDirty(t);
       rowsSoon();
     }
     durRunning = false;
@@ -476,6 +496,7 @@
   }
   var DEFAULT_TINT = [245, 158, 11];
   function tintForTrack(t, cb) {
+    if (settings.accent && settings.accent !== 'art' && ACCENTS[settings.accent]) { cb(ACCENTS[settings.accent][0], ACCENTS[settings.accent][1]); return; }
     if (!t) { cb(DEFAULT_TINT, [59, 130, 246]); return; }
     getCover(t).then(function (c) {
       if (c && c.rgb) cb(c.rgb, shiftHue(c.rgb, 40));
@@ -484,7 +505,9 @@
   }
   function applyViewTint() {
     var t = null;
-    if (state.view === 'album') {
+    if (state.stage) {
+      t = state.current;
+    } else if (state.view === 'album') {
       var al = currentAlbum();
       t = al ? al.tracks[0] : null;
     } else if (state.view === 'artist') {
@@ -604,13 +627,16 @@
 
   /* ------------------------------ rendering ------------------------------ */
 
-  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next', favorites: 'Favourites' };
+  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next', favorites: 'Favourites', settings: 'Settings' };
   var scroller = $('scroller');
 
   function isListView(v) { return v === 'songs' || v === 'queue' || v === 'album' || v === 'artist' || v === 'favorites'; }
   function rowH() { return state.view === 'album' ? 48 : 56; }
 
   function setView(view, detail) {
+    if (view === 'playing') { showStage(true); return; }
+    if (view === 'album-current') { goToCurrentAlbum(); return; }
+    if (view === 'queue') { showInspector('queue'); return; }
     if ((view === 'album' || view === 'artist') && state.view !== 'album' && state.view !== 'artist') state.parentView = state.view;
     if (view === 'album' && state.view === 'artist') state.parentView = 'artist:' + state.detail;
     if (view !== 'album' && view !== 'artist') state.parentView = view;
@@ -619,13 +645,33 @@
     state.sort = { key: 'default', dir: 1 };
     state.selectedId = null;
     invalidate();
-    var navView = view === 'album' ? 'albums' : view === 'artist' ? 'artists' : view;
-    if (view === 'album' && state.parentView.indexOf('artist') === 0) navView = 'artists';
-    $$('[data-view]').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-view') === navView); });
-    closeNowPlaying();
+    state.stage = false;
     scroller.scrollTop = 0;
     renderAll();
+    showStage(false);
+  }
+
+  function updateNavActive() {
+    var view = state.view;
+    var navView = view === 'album' ? 'albums' : view === 'artist' ? 'artists' : view;
+    if (view === 'album' && state.parentView.indexOf('artist') === 0) navView = 'artists';
+    if (state.stage) navView = 'playing';
+    $$('.nav-item[data-view]').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-view') === navView); });
+  }
+
+  function showStage(on) {
+    state.stage = !!on;
+    var has = state.tracks.length > 0;
+    var stageOn = state.stage && has;
+    $('npStage').hidden = !stageOn;
+    $('main').hidden = stageOn;
+    $('minibar').hidden = !has;
+    $('shell').classList.toggle('with-minibar', !stageOn && has);
+    updateNavActive();
+    closeDrawers();
     applyViewTint();
+    if (stageOn) startViz();
+    else renderRows();
   }
   function goBack() {
     var p = state.parentView || 'songs';
@@ -635,8 +681,15 @@
 
   function renderAll(soft) {
     var has = state.tracks.length > 0;
-    $('empty').hidden = has;
-    $('hero').hidden = !has;
+    var isSet = state.view === 'settings';
+    $('npStage').hidden = !(state.stage && has);
+    $('main').hidden = state.stage && has;
+    $('minibar').hidden = !has;
+    $('shell').classList.toggle('with-minibar', !(state.stage && has) && has);
+    $('noFolders').hidden = state.folders.length > 0 || has;
+    $('settingsView').hidden = !isSet;
+    $('empty').hidden = has || isSet;
+    $('hero').hidden = !has && !isSet;
     $('btnClear').hidden = !has;
     $('countSongs').textContent = has ? state.tracks.length : '';
     $('countAlbums').textContent = has ? getAlbums().length : '';
@@ -652,8 +705,9 @@
     $('search').disabled = $('search2').disabled = v === 'queue';
     $('countFavs').textContent = has && favCount() ? favCount() : '';
 
-    if (!has) { $('noResults').hidden = true; return; }
+    if (!has && !isSet) { $('noResults').hidden = true; return; }
     renderHero(soft);
+    if (isSet) { if (!soft) renderSettings(); $('noResults').hidden = true; return; }
     if (isListView(v)) { renderHead(); renderRows(); }
     else if (v === 'albums') { if (!soft || !$('albumGrid').childElementCount) renderAlbums(); }
     else if (v === 'artists') { if (!soft || !$('artistGrid').childElementCount) renderArtists(); }
@@ -864,46 +918,182 @@
   }
 
   /* ------------------------------ player ------------------------------ */
+  // Two "decks" so one song can fade into the next (crossfade / DJ mode).
+  // `audio` always points at the deck that is currently playing.
 
-  var audio = new Audio();
-  audio.preload = 'auto';
-  audio.volume = typeof settings.volume === 'number' ? settings.volume : 0.8;
-  audio.muted = !!settings.muted;
-  var currentUrl = null, errorStreak = 0, seeking = false, pendingSeek = 0;
+  var decks = [new Audio(), new Audio()];
+  var active = 0;
+  var audio = decks[0];
+  var deckUrls = [null, null];
+  var vol = typeof settings.volume === 'number' ? settings.volume : 0.8;
+  var muted = !!settings.muted;
+  var errorStreak = 0, seeking = false, pendingSeek = 0;
+  var fade = null;          // crossfade in progress: { from, fromIdx, timer, iv }
+  decks.forEach(function (d) { d.preload = 'auto'; });
+
+  function applyVolumeToDecks() {
+    decks.forEach(function (d) { if (!fade || d !== fade.from || ac) d.volume = vol; d.muted = muted; });
+  }
+  function setVolume(v) { vol = Math.max(0, Math.min(1, v)); muted = false; applyVolumeToDecks(); updateVolume(); saveSettings(); }
+  function setMuted(m) { muted = !!m; applyVolumeToDecks(); updateVolume(); saveSettings(); }
+  applyVolumeToDecks();
+
+  function speed() { return settings.speed || 1; }
+  function applyRate() {
+    var r = speed(), keep = settings.preservePitch !== false;
+    decks.forEach(function (d) {
+      d.defaultPlaybackRate = r;
+      d.playbackRate = r;
+      d.preservesPitch = keep; d.webkitPreservesPitch = keep; d.mozPreservesPitch = keep;
+    });
+  }
+  applyRate();
+
+  // smooth gain changes on one deck (needs Web Audio; otherwise falls back to element volume)
+  function rampDeck(idx, target, secs, curve) {
+    if (!deckGains) return;
+    var g = deckGains[idx].gain, now = ac.currentTime;
+    g.cancelScheduledValues(now);
+    if (!secs) { g.setValueAtTime(target, now); return; }
+    var from = g.value;
+    if (curve && g.setValueCurveAtTime) {
+      var n = 64, arr = new Float32Array(n);
+      for (var i = 0; i < n; i++) {
+        var x = i / (n - 1);
+        // equal-power curve keeps the loudness steady through the fade
+        arr[i] = target > from ? Math.sin(x * Math.PI / 2) * target : Math.cos(x * Math.PI / 2) * from;
+      }
+      try { g.setValueCurveAtTime(arr, now, secs); return; } catch (e) { /* fall through */ }
+    }
+    g.setValueAtTime(from, now);
+    g.linearRampToValueAtTime(target, now + secs);
+  }
+
+  function cancelFade() {
+    if (!fade) return;
+    clearTimeout(fade.timer);
+    clearInterval(fade.iv);
+    fade.from.pause();
+    if (deckGains) rampDeck(fade.fromIdx, 1, 0);
+    fade = null;
+    applyVolumeToDecks();
+  }
+
+  function setDeckSource(idx, t) {
+    if (deckUrls[idx]) URL.revokeObjectURL(deckUrls[idx]);
+    deckUrls[idx] = URL.createObjectURL(t.file);
+    decks[idx].src = deckUrls[idx];
+    decks[idx].defaultPlaybackRate = speed();
+  }
+
+  function trackStarted(t, prev) {
+    if (prev && prev !== t) finishStats(prev);
+    beginStats(t);
+    state.current = t;
+    updateNowPlaying();
+    loadLyrics(t);
+    if (state.view === 'queue') { invalidate(); updateHeroMeta(); }
+    renderRows();
+    djFill();
+    saveLast();
+  }
 
   function loadTrack(t, autoplay, startAt) {
     if (!t) return;
-    var oldUrl = currentUrl;
-    currentUrl = URL.createObjectURL(t.file);
-    state.current = t;
+    cancelFade();
+    var prev = state.current;
     pendingSeek = startAt || 0;
-    audio.src = currentUrl;
-    if (oldUrl) URL.revokeObjectURL(oldUrl);
+    setDeckSource(active, t);
+    if (deckGains) rampDeck(active, 1, 0);
+    trackStarted(t, prev);
     if (autoplay) play();
-    updateNowPlaying();
-    if (state.view === 'queue') { invalidate(); updateHeroMeta(); }
-    renderRows();
-    saveLast();
+  }
+
+  // Fade the current song out while the next one fades in.
+  function crossfadeTo(i, secs) {
+    var t = state.byId.get(state.queue[i]);
+    if (!t) return false;
+    cancelFade();
+    var fromIdx = active, toIdx = 1 - active, from = decks[fromIdx], to = decks[toIdx];
+    var prev = state.current;
+    setDeckSource(toIdx, t);
+    to.volume = ac ? vol : 0;
+    to.muted = muted;
+    active = toIdx;
+    audio = to;
+    state.qIndex = i;
+    pendingSeek = 0;
+    if (deckGains) { rampDeck(toIdx, 0, 0); }
+    var p = to.play();
+    if (p && p.catch) p.catch(function () { /* ignore */ });
+    if (deckGains) {
+      rampDeck(fromIdx, 0, secs, true);
+      rampDeck(toIdx, 1, secs, true);
+    }
+    fade = { from: from, fromIdx: fromIdx, iv: null, timer: null };
+    if (!deckGains) { // element-volume fallback (Safari without Web Audio)
+      var t0 = Date.now();
+      fade.iv = setInterval(function () {
+        var x = Math.min(1, (Date.now() - t0) / (secs * 1000));
+        from.volume = vol * Math.cos(x * Math.PI / 2);
+        to.volume = vol * Math.sin(x * Math.PI / 2);
+        if (x >= 1) clearInterval(fade.iv);
+      }, 60);
+    }
+    fade.timer = setTimeout(function () {
+      from.pause();
+      if (deckGains) rampDeck(fromIdx, 1, 0);
+      clearInterval(fade && fade.iv);
+      fade = null;
+      applyVolumeToDecks();
+    }, secs * 1000 + 150);
+    trackStarted(t, prev);
+    setPlayingClass();
+    return true;
+  }
+
+  function canCrossfade() { return !!deckGains || !IS_IOS; }
+  function crossfadeSecs() {
+    var x = typeof settings.crossfade === 'number' ? settings.crossfade : 0;
+    if (settings.dj && x < 1) x = 6; // the DJ always blends
+    return canCrossfade() ? x : 0;
   }
 
   function play() {
     if (!state.current) {
+      if (settings.dj) { startDj(); return; }
       var ids = isListView(state.view) && getList().length ? getList() : defaultIds();
       if (ids.length) playIds(ids, state.shuffle ? Math.floor(Math.random() * ids.length) : 0);
       return;
     }
     ensureAudioGraph();
     if (ac && ac.state === 'suspended') ac.resume();
+    if (deckGains && settings.softPause !== false && audio.paused) { rampDeck(active, 0, 0); rampDeck(active, 1, 0.25); }
     var p = audio.play();
     if (p && p.catch) p.catch(function (e) { if (e && e.name === 'NotAllowedError') toast('Press play to start.'); });
   }
-  function pause() { audio.pause(); }
-  function toggle() { if (audio.paused) play(); else pause(); }
-  function stop() {
+  var pauseTimer = null;
+  function pause() {
+    cancelFade();
+    if (deckGains && settings.softPause !== false && !audio.paused) {
+      rampDeck(active, 0, 0.2);
+      clearTimeout(pauseTimer);
+      var d = audio;
+      pauseTimer = setTimeout(function () { d.pause(); rampDeck(active, 1, 0); }, 220);
+      document.body.classList.remove('is-playing');
+      return;
+    }
     audio.pause();
-    audio.removeAttribute('src');
-    audio.load();
-    if (currentUrl) { URL.revokeObjectURL(currentUrl); currentUrl = null; }
+  }
+  function toggle() { if (audio.paused || !document.body.classList.contains('is-playing')) play(); else pause(); }
+  function stop() {
+    cancelFade();
+    decks.forEach(function (d, i) {
+      d.pause();
+      d.removeAttribute('src');
+      d.load();
+      if (deckUrls[i]) { URL.revokeObjectURL(deckUrls[i]); deckUrls[i] = null; }
+    });
   }
 
   function defaultIds() {
@@ -912,6 +1102,13 @@
 
   function playIds(ids, index, forceShuffle) {
     if (!ids.length) return;
+    if (settings.dj) { // DJ keeps your pick and builds the rest of the queue itself
+      state.queue = [ids[index]];
+      state.originalQueue = state.queue.slice();
+      state.qIndex = 0;
+      loadTrack(state.byId.get(ids[index]), true);
+      return;
+    }
     if (forceShuffle && !state.shuffle) { state.shuffle = true; updateModes(); saveSettings(); }
     state.originalQueue = ids.slice();
     state.queue = ids.slice();
@@ -933,18 +1130,27 @@
     state.qIndex = Math.max(0, state.queue.indexOf(cur));
   }
 
+  function nextIndex() {
+    djFill();
+    var i = state.qIndex + 1;
+    if (i < state.queue.length) return i;
+    if (state.repeat === 'all' && state.queue.length) {
+      if (state.shuffle) shuffleArr(state.queue);
+      return 0;
+    }
+    return -1;
+  }
+
   function next(auto) {
     if (!state.queue.length) return;
     if (auto && state.repeat === 'one') { audio.currentTime = 0; play(); return; }
-    var i = state.qIndex + 1;
-    if (i >= state.queue.length) {
-      if (state.repeat === 'all') {
-        i = 0;
-        if (state.shuffle) shuffleArr(state.queue);
-      } else {
-        if (auto) { audio.pause(); audio.currentTime = 0; }
-        return;
-      }
+    var i = nextIndex();
+    if (i < 0) {
+      if (auto) { audio.pause(); audio.currentTime = 0; }
+      return;
+    }
+    if (!auto && settings.smoothSkip !== false && crossfadeSecs() > 0 && !audio.paused) {
+      if (crossfadeTo(i, 1.2)) return;
     }
     state.qIndex = i;
     loadTrack(state.byId.get(state.queue[i]), true);
@@ -964,28 +1170,184 @@
     startViz();
   }
 
-  audio.addEventListener('play', setPlayingClass);
-  audio.addEventListener('pause', setPlayingClass);
-  audio.addEventListener('playing', function () { errorStreak = 0; });
-  audio.addEventListener('ended', function () { next(true); });
-  audio.addEventListener('loadedmetadata', function () {
-    if (pendingSeek && pendingSeek < audio.duration) audio.currentTime = pendingSeek;
-    pendingSeek = 0;
-    var t = state.current;
-    if (t && !t.duration && isFinite(audio.duration)) { t.duration = audio.duration; renderRows(); }
-    updateTime();
+  function maybeAutoCrossfade() {
+    var xf = crossfadeSecs();
+    if (!xf || fade || seeking || state.repeat === 'one' || audio.paused) return;
+    var d = audio.duration;
+    if (!d || !isFinite(d) || d < xf * 2 + 4) return;
+    var left = (d - audio.currentTime) / (audio.playbackRate || 1);
+    if (left > xf) return;
+    var i = nextIndex();
+    if (i >= 0) crossfadeTo(i, Math.max(1, left));
+  }
+
+  // events from both decks; ignore anything from the deck that is fading out
+  decks.forEach(function (d) {
+    d.addEventListener('play', function () { if (this === audio) setPlayingClass(); });
+    d.addEventListener('pause', function () { if (this === audio) setPlayingClass(); });
+    d.addEventListener('playing', function () { if (this === audio) errorStreak = 0; });
+    d.addEventListener('ended', function () { if (this === audio) next(true); });
+    d.addEventListener('loadedmetadata', function () {
+      if (this !== audio) return;
+      if (pendingSeek && pendingSeek < audio.duration) audio.currentTime = pendingSeek;
+      pendingSeek = 0;
+      var t = state.current;
+      if (t && !t.duration && isFinite(audio.duration)) { t.duration = audio.duration; markMetaDirty(t); renderRows(); }
+      updateTime();
+    });
+    d.addEventListener('timeupdate', function () {
+      if (this !== audio) return;
+      updateTime(); updateLyricHighlight(); sampleStats(); maybeAutoCrossfade(); saveLastSoon();
+    });
+    d.addEventListener('seeked', function () { if (this === audio) { lyricIdx = -1; updateLyricHighlight(); } });
+    d.addEventListener('error', function () {
+      if (this !== audio) return;
+      var t = state.current;
+      if (!t || !audio.getAttribute('src')) return;
+      t.broken = true;
+      renderRows();
+      errorStreak++;
+      toast('Can’t play “' + t.title + '” in this browser' + (t.ext === 'aiff' || t.ext === 'aif' || t.ext === 'caf' ? ' (try Safari for AIFF/ALAC).' : '.'));
+      if (errorStreak < 5) next(false); else { errorStreak = 0; pause(); }
+    });
   });
-  audio.addEventListener('timeupdate', function () { updateTime(); saveLastSoon(); });
-  audio.addEventListener('volumechange', function () { updateVolume(); saveSettings(); });
-  audio.addEventListener('error', function () {
-    var t = state.current;
-    if (!t || !audio.getAttribute('src')) return;
-    t.broken = true;
-    renderRows();
-    errorStreak++;
-    toast('Can’t play “' + t.title + '” in this browser' + (t.ext === 'aiff' || t.ext === 'aif' || t.ext === 'caf' ? ' (try Safari for AIFF/ALAC).' : '.'));
-    if (errorStreak < 5) next(false); else { errorStreak = 0; pause(); }
-  });
+
+  /* ---------------- listening stats (used by the DJ) ---------------- */
+  var stats = {};
+  try { stats = JSON.parse(localStorage.getItem('tunebox.stats') || '{}') || {}; } catch (e) { stats = {}; }
+  var history = [];
+  try { history = JSON.parse(localStorage.getItem('tunebox.history') || '[]') || []; } catch (e) { history = []; }
+  var cur = { t: null, maxPos: 0, eSum: 0, eN: 0, lastSample: 0 };
+  function stat(t) { return stats[t.path] || (stats[t.path] = { p: 0, s: 0 }); }
+  function beginStats(t) {
+    cur = { t: t, maxPos: 0, eSum: 0, eN: 0, lastSample: 0 };
+    history.push(t.path);
+    if (history.length > 300) history = history.slice(-300);
+  }
+  function sampleStats() {
+    if (!cur.t || cur.t !== state.current) return;
+    cur.maxPos = Math.max(cur.maxPos, audio.currentTime);
+    var now = Date.now();
+    if (analyser && now - cur.lastSample > 2000) {
+      cur.lastSample = now;
+      analyser.getByteFrequencyData(freq);
+      var sum = 0;
+      for (var i = 0; i < freq.length; i++) sum += freq[i];
+      cur.eSum += sum / freq.length / 255;
+      cur.eN++;
+    }
+  }
+  function finishStats(t) {
+    if (!cur.t || cur.t !== t) return;
+    var s = stat(t), d = t.duration || audio.duration || 0;
+    if (d && cur.maxPos < Math.min(30, d * 0.35)) s.s = (s.s || 0) + 1;      // skipped early
+    else if (!d || cur.maxPos > d * 0.5) s.p = (s.p || 0) + 1;               // properly played
+    if (cur.eN >= 3) s.e = Math.round((s.e ? (s.e + cur.eSum / cur.eN) / 2 : cur.eSum / cur.eN) * 1000) / 1000;
+    s.l = Date.now();
+    saveStatsSoon();
+  }
+  var saveStatsSoon = debounce(function () {
+    try {
+      localStorage.setItem('tunebox.stats', JSON.stringify(stats));
+      localStorage.setItem('tunebox.history', JSON.stringify(history));
+    } catch (e) { /* ignore quota */ }
+  }, 2000);
+  window.addEventListener('pagehide', function () { if (state.current) finishStats(state.current); saveStatsSoon(); });
+
+  /* ---------------- Tunebox DJ (smart, no AI model needed) ---------------- */
+  // Scores every song against what's playing: genre, artist, era, tempo, energy, your favourites,
+  // what you play through vs. skip, and what was played recently. Then picks with a little randomness.
+  function djPick() {
+    var ref = state.byId.get(state.queue[state.queue.length - 1]) || state.current;
+    if (!state.tracks.length) return null;
+    var variety = typeof settings.djVariety === 'number' ? settings.djVariety : 0.5;
+    var queued = new Set(state.queue.slice(Math.max(0, state.qIndex)));
+    var recentN = Math.min(250, Math.floor(state.tracks.length * 0.6));
+    var recent = new Set(history.slice(-recentN));
+    state.queue.slice(Math.max(0, state.queue.length - recentN)).forEach(function (id) { var t = state.byId.get(id); if (t) recent.add(t.path); });
+    var lastArtists = state.queue.slice(-2).map(function (id) { var t = state.byId.get(id); return t ? artistOf(t).toLowerCase() : ''; });
+    var best = [];
+    for (var i = 0; i < state.tracks.length; i++) {
+      var c = state.tracks[i];
+      if (c.broken || queued.has(c.id)) continue;
+      var sc = Math.random() * (1 + variety * 4);
+      if (recent.has(c.path)) sc -= 40;
+      if (ref) {
+        var ca = artistOf(c).toLowerCase(), ra = artistOf(ref).toLowerCase();
+        if (c.genre && ref.genre) sc += c.genre.toLowerCase() === ref.genre.toLowerCase() ? 4 * (1.2 - variety) : -1 * (1 - variety);
+        if (lastArtists.indexOf(ca) >= 0 && settings.djArtistGap !== false) sc -= 8;
+        else if (ca === ra) sc += 1.5 * (1 - variety);
+        if (c.year && ref.year) sc += 2.5 * Math.exp(-Math.abs(c.year - ref.year) / 6);
+        if (c.bpm && ref.bpm) sc += 2.5 * Math.exp(-Math.abs(c.bpm - ref.bpm) / 10);
+        var se = stats[c.path], re = stats[ref.path];
+        if (se && re && se.e && re.e) sc += 2.5 * (1 - Math.min(1, Math.abs(se.e - re.e) * 4));
+      }
+      var st = stats[c.path];
+      if (st) {
+        sc += Math.min(2.5, Math.log(1 + (st.p || 0)) * 0.8);
+        sc -= Math.min(5, (st.s || 0) * 1.3);
+      } else {
+        sc += variety * 1.5; // a nudge towards songs you haven't heard yet
+      }
+      if (settings.djFavs !== false && favs[c.path]) sc += 2;
+      if (best.length < 12 || sc > best[best.length - 1].sc) {
+        best.push({ t: c, sc: sc });
+        best.sort(function (a, b) { return b.sc - a.sc; });
+        if (best.length > 12) best.pop();
+      }
+    }
+    if (!best.length) return null;
+    // weighted pick among the best few, so the DJ doesn't become predictable
+    var top = best.slice(0, 6), wsum = 0;
+    top.forEach(function (b) { b.w = Math.exp((b.sc - top[0].sc) / 2); wsum += b.w; });
+    var r = Math.random() * wsum;
+    for (var k = 0; k < top.length; k++) { r -= top[k].w; if (r <= 0) return top[k].t.id; }
+    return top[0].t.id;
+  }
+  function djFill() {
+    if (!settings.dj || !state.tracks.length) return;
+    var added = false;
+    while (state.queue.length - Math.max(0, state.qIndex) - 1 < 6) {
+      var id = djPick();
+      if (id == null) break;
+      state.queue.push(id);
+      added = true;
+    }
+    if (added) { state.originalQueue = state.queue.slice(); updateUpNext(); }
+  }
+  function startDj(seed) {
+    if (!state.tracks.length) { toast('Add some music first.'); return; }
+    settings.dj = true;
+    saveSettings();
+    if (state.shuffle) { state.shuffle = false; updateModes(); }
+    var s = seed || state.current;
+    if (!s) {
+      var favList = state.tracks.filter(isFav);
+      var pool = favList.length ? favList : state.tracks;
+      s = pool[Math.floor(Math.random() * pool.length)];
+    }
+    state.queue = [s.id];
+    state.qIndex = 0;
+    if (state.current === s) djFill();
+    else loadTrack(s, true);
+    if (audio.paused) play();
+    updateDjUi();
+    toast('Tunebox DJ is on — sit back.', 2200);
+  }
+  function stopDj() {
+    settings.dj = false;
+    saveSettings();
+    updateDjUi();
+    toast('DJ off', 1200);
+  }
+  function toggleDj() { if (settings.dj) stopDj(); else startDj(); }
+  function updateDjUi() {
+    $$('[data-cmd="dj"]').forEach(function (b) { b.classList.toggle('on', !!settings.dj); });
+    document.body.classList.toggle('dj-on', !!settings.dj);
+    $$('.dj-state').forEach(function (el) { el.textContent = settings.dj ? 'On' : 'Off'; });
+    if (state.view === 'settings') renderSettings();
+    updateUpNext();
+  }
 
   function updateTime() {
     var d = audio.duration || (state.current && state.current.duration) || 0;
@@ -1004,13 +1366,13 @@
   }
 
   function updateVolume() {
-    var v = audio.muted ? 0 : audio.volume;
+    var v = muted ? 0 : vol;
     $$('.vol-range').forEach(function (r) {
       r.value = v;
       r.style.setProperty('--p', (v * 100) + '%');
     });
     $('volPct').textContent = Math.round(v * 100) + '%';
-    $$('.mute-btn').forEach(function (b) { b.classList.toggle('muted', audio.muted || audio.volume === 0); });
+    $$('.mute-btn').forEach(function (b) { b.classList.toggle('muted', muted || vol === 0); });
   }
 
   var LOSSLESS = { flac: 1, wav: 1, aif: 1, aiff: 1, caf: 1 };
@@ -1019,14 +1381,12 @@
     var sub = t ? t.artist + ' — ' + t.album : 'Pick a song to start';
     $('npTitle').textContent = $('stTitle').textContent = t ? t.title : 'Not playing';
     $('npSub').textContent = $('stSub').textContent = sub;
-    $('npvTitle').textContent = t ? t.title : '';
-    $('npvSub').textContent = t ? sub : '';
     $('stFormat').textContent = t ? t.ext.toUpperCase() + (LOSSLESS[t.ext] ? ' · LOSSLESS' : '') : '';
     document.title = t ? t.title + ' · ' + t.artist : 'Tunebox';
     updateFavButtons();
     updateUpNext();
 
-    var arts = [$('npArt'), $('npvArt'), $('stArt')];
+    var arts = [$('npArt'), $('stArt')];
     arts.forEach(function (el) { el.setAttribute('data-k', t ? t.albumKey : ''); });
     if (!t) { arts.forEach(function (el) { el.innerHTML = ''; }); updateTime(); return; }
     arts.forEach(function (el) { paintCover(el, t, t.album); });
@@ -1043,24 +1403,26 @@
   }
 
   function updateUpNext() {
-    var nx = null;
-    if (state.repeat === 'one') nx = state.current;
-    else if (state.qIndex + 1 < state.queue.length) nx = state.byId.get(state.queue[state.qIndex + 1]);
-    else if (state.repeat === 'all' && state.queue.length) nx = state.byId.get(state.queue[0]);
-    $('npvNext').innerHTML = nx ? 'Up next: <b>' + esc(nx.title) + '</b> · ' + esc(nx.artist) : '';
-
-    // the short "Up Next" list in the Now Playing panel
-    var html = '', n = 0;
-    for (var i = state.qIndex + 1; i < state.queue.length && n < 6; i++, n++) {
+    var list = $('queueList');
+    if (!state.queue.length || state.qIndex < 0) {
+      list.innerHTML = '<div class="insp-empty">' + (state.tracks.length ? 'Play a song to fill your queue.' : 'Add some music to get started.') + '</div>';
+      return;
+    }
+    var html = '<div class="insp-label">' + (settings.dj ? '✦ DJ picks · ' : 'Playing Next · ') + plural(state.queue.length - state.qIndex, 'Track') + '</div>';
+    var end = Math.min(state.queue.length, state.qIndex + 120);
+    for (var i = state.qIndex; i < end; i++) {
       var q = state.byId.get(state.queue[i]);
       if (!q) continue;
-      html += '<button class="qrow" data-q="' + i + '">' +
-        '<div class="thumb cover">' + coverInner(coverSync.has(q.albumKey) ? coverSync.get(q.albumKey) : undefined, q.album) + '</div>' +
+      var isCur = i === state.qIndex;
+      html += '<button class="qrow' + (isCur ? ' playing' : '') + '" data-q="' + i + '">' +
+        '<div class="thumb cover">' + coverInner(coverSync.has(q.albumKey) ? coverSync.get(q.albumKey) : undefined, q.album) +
+          (isCur ? '<div class="on-art"><span class="eq"><i></i><i></i><i></i></span></div>' : '') + '</div>' +
         '<div class="tt"><div class="t1">' + esc(q.title) + '</div><div class="t2">' + esc(q.artist) + '</div></div>' +
         '<span class="qt">' + (q.duration ? fmtTime(q.duration) : '') + '</span></button>';
-      if (!coverSync.has(q.albumKey)) getCover(q).then(upNextSoon);
+      if (!coverSync.has(q.albumKey) && i < state.qIndex + 20) getCover(q).then(upNextSoon);
     }
-    $('stNext').innerHTML = html || '<div class="upnext-empty">' + (state.current ? 'Nothing else queued.' : 'Play something to fill your queue.') + '</div>';
+    if (end < state.queue.length) html += '<div class="insp-empty">+ ' + plural(state.queue.length - end, 'more song') + '</div>';
+    list.innerHTML = html;
   }
   var upNextSoon = throttle(function () { updateUpNext(); }, 400);
 
@@ -1092,50 +1454,162 @@
   /* ---------------- equalizer + visualizer (Web Audio) ---------------- */
   // Built on first play (browsers require a click first). Skipped on iPhone/iPad, where routing
   // audio through Web Audio can stop playback when the screen locks.
-  var ac = null, eqNodes = null, analyser = null, freq = null;
+  var ac = null, eqNodes = null, analyser = null, freq = null, deckGains = null;
+  var preampNode = null, dryNode = null, wetNode = null, limiter = null;
+  var EQ_BANDS = [
+    { f: 32, type: 'lowshelf', label: '32' },
+    { f: 64, type: 'peaking', label: '64' },
+    { f: 125, type: 'peaking', label: '125' },
+    { f: 250, type: 'peaking', label: '250' },
+    { f: 500, type: 'peaking', label: '500' },
+    { f: 1000, type: 'peaking', label: '1K' },
+    { f: 2000, type: 'peaking', label: '2K' },
+    { f: 4000, type: 'peaking', label: '4K' },
+    { f: 8000, type: 'peaking', label: '8K' },
+    { f: 16000, type: 'highshelf', label: '16K' }
+  ];
   var EQ_PRESETS = {
-    flat: [0, 0, 0], warm: [4, 1, -2], bass: [7, -1, 1],
-    vocal: [-2, 4, 1], night: [-3, 2, -4], bright: [-1, 0, 5]
+    flat:      { name: 'Flat',           v: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+    bass:      { name: 'Bass Boost',     v: [9, 8, 6, 3, 0, -1, 0, 0, 1, 1] },
+    warm:      { name: 'Warm Vinyl',     v: [4, 4, 3, 1, 0, 0, -1, -2, -3, -4] },
+    vocal:     { name: 'Vocal',          v: [-3, -2, -1, 1, 4, 5, 4, 2, 0, -1] },
+    rock:      { name: 'Rock',           v: [5, 4, 3, 1, -1, -1, 1, 3, 4, 5] },
+    hiphop:    { name: 'Hip-Hop',        v: [7, 6, 3, 1, -1, -1, 1, 0, 2, 3] },
+    edm:       { name: 'Electronic',     v: [6, 5, 2, 0, -2, 1, 0, 2, 5, 6] },
+    party:     { name: 'Loudness',       v: [6, 5, 3, 0, -1, 0, 2, 4, 5, 5] },
+    night:     { name: 'Late Night',     v: [-4, -3, -1, 0, 2, 2, 1, 0, -2, -4] },
+    bright:    { name: 'Bright',         v: [-2, -1, 0, 0, 0, 1, 3, 5, 6, 7] },
+    laptop:    { name: 'Laptop Speakers', v: [-6, -2, 3, 4, 3, 2, 2, 3, 2, 1] },
+    classical: { name: 'Classical',      v: [4, 3, 2, 1, -1, -1, 0, 2, 3, 4] }
   };
-  var eq = settings.eq && settings.eq.length === 3 ? settings.eq : [0, 0, 0];
+  var VIBES = {
+    normal:    { name: 'Normal',          speed: 1,    pitch: true,  reverb: 0 },
+    slowed:    { name: 'Slowed + Reverb', speed: 0.85, pitch: false, reverb: 0.4 },
+    chill:     { name: 'Chill',           speed: 0.93, pitch: false, reverb: 0.2 },
+    spedup:    { name: 'Sped Up',         speed: 1.15, pitch: false, reverb: 0 },
+    nightcore: { name: 'Nightcore',       speed: 1.25, pitch: false, reverb: 0.05 },
+    hall:      { name: 'Concert Hall',    speed: 1,    pitch: true,  reverb: 0.35 }
+  };
+  var eq = settings.eq && settings.eq.length === EQ_BANDS.length ? settings.eq : EQ_PRESETS.flat.v.slice();
 
+  function makeImpulse(secs, decay) {
+    var rate = ac.sampleRate, len = Math.floor(rate * secs), buf = ac.createBuffer(2, len, rate);
+    for (var ch = 0; ch < 2; ch++) {
+      var d = buf.getChannelData(ch);
+      for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+    return buf;
+  }
+
+  // decks -> volume boost -> 10-band EQ -> (dry + reverb) -> limiter -> visualizer -> speakers
   function ensureAudioGraph() {
     if (ac || IS_IOS) return;
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     try {
       ac = new AC();
-      var src = ac.createMediaElementSource(audio);
-      var bass = ac.createBiquadFilter(); bass.type = 'lowshelf'; bass.frequency.value = 180;
-      var mid = ac.createBiquadFilter(); mid.type = 'peaking'; mid.frequency.value = 1000; mid.Q.value = 0.9;
-      var treble = ac.createBiquadFilter(); treble.type = 'highshelf'; treble.frequency.value = 4200;
+      preampNode = ac.createGain();
+      deckGains = decks.map(function (d) {
+        var src = ac.createMediaElementSource(d), g = ac.createGain();
+        src.connect(g);
+        g.connect(preampNode);
+        return g;
+      });
+      eqNodes = EQ_BANDS.map(function (b) {
+        var n = ac.createBiquadFilter();
+        n.type = b.type;
+        n.frequency.value = b.f;
+        if (b.type === 'peaking') n.Q.value = 1.4;
+        return n;
+      });
+      var node = preampNode;
+      eqNodes.forEach(function (n) { node.connect(n); node = n; });
+      dryNode = ac.createGain();
+      wetNode = ac.createGain();
+      var conv = ac.createConvolver();
+      conv.buffer = makeImpulse(2.8, 2.4);
+      node.connect(dryNode);
+      node.connect(conv);
+      conv.connect(wetNode);
+      // a limiter catches peaks, so big EQ boosts get loud without crackling
+      limiter = ac.createDynamicsCompressor();
+      limiter.threshold.value = -1.5;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 20;
+      limiter.attack.value = 0.002;
+      limiter.release.value = 0.2;
+      dryNode.connect(limiter);
+      wetNode.connect(limiter);
       analyser = ac.createAnalyser();
       analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.8;
+      analyser.smoothingTimeConstant = 0.82;
       freq = new Uint8Array(analyser.frequencyBinCount);
-      src.connect(bass); bass.connect(mid); mid.connect(treble); treble.connect(analyser); analyser.connect(ac.destination);
-      eqNodes = [bass, mid, treble];
+      limiter.connect(analyser);
+      analyser.connect(ac.destination);
+      // keep audio flowing in the background: if the system pauses the audio engine, wake it again
+      ac.onstatechange = function () { if (ac.state !== 'running' && !audio.paused) ac.resume(); };
       applyEq();
+      applyFx();
     } catch (e) {
-      ac = null; eqNodes = null; analyser = null;
+      ac = null; eqNodes = null; analyser = null; deckGains = null;
     }
   }
   function applyEq() {
     if (!eqNodes) return;
-    for (var i = 0; i < 3; i++) eqNodes[i].gain.setTargetAtTime(eq[i], ac.currentTime, 0.05);
+    for (var i = 0; i < eqNodes.length; i++) eqNodes[i].gain.setTargetAtTime(eq[i], ac.currentTime, 0.05);
   }
-  function renderEq() {
-    var ids = ['eqBass', 'eqMid', 'eqTreble'];
-    ids.forEach(function (id, i) {
-      var r = $(id);
-      r.value = eq[i];
-      r.style.setProperty('--p', ((eq[i] + 12) / 24 * 100) + '%');
-      $(id + 'Val').textContent = (eq[i] > 0 ? '+' : '') + eq[i] + ' dB';
-    });
+  function applyFx() {
+    applyRate();
+    if (!ac) return;
+    var pre = typeof settings.preamp === 'number' ? settings.preamp : 0;
+    preampNode.gain.setTargetAtTime(Math.pow(10, pre / 20), ac.currentTime, 0.05);
+    var r = settings.reverb || 0;
+    wetNode.gain.setTargetAtTime(r * 1.2, ac.currentTime, 0.08);
+    dryNode.gain.setTargetAtTime(1 - r * 0.35, ac.currentTime, 0.08);
+  }
+  function buildEqBands() {
+    $('eqBands').innerHTML = EQ_BANDS.map(function (b, i) {
+      return '<div class="eq-band"><b id="eqv' + i + '">0</b>' +
+        '<div class="eq-slot"><input type="range" class="mac-slider" data-band="' + i + '" min="-15" max="15" step="1" value="0" aria-label="' + b.label + ' Hz"></div>' +
+        '<span>' + b.label + '</span></div>';
+    }).join('');
+    $('eqPresets').innerHTML = Object.keys(EQ_PRESETS).map(function (k) {
+      return '<button data-eq="' + k + '">' + EQ_PRESETS[k].name + '</button>';
+    }).join('');
+    $('vibes').innerHTML = Object.keys(VIBES).map(function (k) {
+      return '<button data-vibe="' + k + '">' + VIBES[k].name + '</button>';
+    }).join('');
+  }
+  function eqPresetKey() {
     var key = '';
-    Object.keys(EQ_PRESETS).forEach(function (k) { if (EQ_PRESETS[k].join() === eq.join()) key = k; });
+    Object.keys(EQ_PRESETS).forEach(function (k) { if (EQ_PRESETS[k].v.join() === eq.join()) key = k; });
+    return key;
+  }
+  function vibeKey() {
+    var key = '';
+    Object.keys(VIBES).forEach(function (k) {
+      var v = VIBES[k];
+      if (Math.abs(speed() - v.speed) < 0.001 && (settings.preservePitch !== false) === v.pitch && Math.abs((settings.reverb || 0) - v.reverb) < 0.001) key = k;
+    });
+    return key;
+  }
+  function setFill(r, min, max) { r.style.setProperty('--p', ((r.value - min) / (max - min) * 100) + '%'); }
+  function renderEq() {
+    $$('#eqBands input').forEach(function (r, i) {
+      r.value = eq[i];
+      setFill(r, -15, 15);
+      $('eqv' + i).textContent = (eq[i] > 0 ? '+' : '') + eq[i];
+    });
+    var key = eqPresetKey(), vk = vibeKey();
     $$('#eqPresets button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-eq') === key); });
-    $('eqNote').textContent = IS_IOS ? 'The equalizer isn’t available on iPhone / iPad.' : '';
+    $$('#vibes button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-vibe') === vk); });
+    var pre = $('eqPreamp'); pre.value = settings.preamp || 0; setFill(pre, -12, 12);
+    $('eqPreampVal').textContent = (pre.value > 0 ? '+' : '') + pre.value + ' dB';
+    var sp = $('fxSpeed'); sp.value = speed(); setFill(sp, 0.5, 1.5);
+    $('fxSpeedVal').textContent = speed().toFixed(2) + '×';
+    var rv = $('fxReverb'); rv.value = settings.reverb || 0; setFill(rv, 0, 0.8);
+    $('fxReverbVal').textContent = Math.round((settings.reverb || 0) * 100) + '%';
+    $('eqNote').textContent = IS_IOS ? 'On iPhone / iPad only speed works — the browser there doesn’t allow EQ or reverb.' : '';
   }
   function setEq(vals) {
     eq = vals.slice();
@@ -1143,13 +1617,25 @@
     saveSettings();
     applyEq();
     renderEq();
+    if (state.view === 'settings') renderSettings();
+  }
+  function setVibe(k) {
+    var v = VIBES[k];
+    settings.speed = v.speed;
+    settings.preservePitch = v.pitch;
+    settings.reverb = v.reverb;
+    saveSettings();
+    applyFx();
+    renderEq();
+    if (state.view === 'settings') renderSettings();
+    if (k !== 'normal') toast(v.name + ' on', 1300);
   }
   function toggleEqPanel(force) {
     var p = $('eqPanel');
     var show = typeof force === 'boolean' ? force : p.hidden;
     p.hidden = !show;
-    if (show) renderEq();
-    $$('[data-cmd="eq"], #btnEq').forEach(function (b) { b.classList.toggle('on', show); });
+    if (show) { ensureAudioGraph(); renderEq(); }
+    $('btnEq').classList.toggle('on', show);
   }
 
   var viz = $('viz'), vctx = viz.getContext('2d');
@@ -1239,15 +1725,153 @@
 
   /* ---------------- Now Playing screen ---------------- */
 
-  function openNowPlaying() {
-    if (!state.current) { play(); return; }
-    $('npView').hidden = false;
-    tintForTrack(state.current, setTint);
+  function openNowPlaying() { showStage(true); }
+  function closeNowPlaying() { if (state.stage) showStage(false); }
+
+  /* ---------------- lyrics (.lrc next to the song, or embedded in its tags) ---------------- */
+  function readText(file) {
+    if (file.text) return file.text();
+    return new Promise(function (res) {
+      var fr = new FileReader();
+      fr.onload = function () { res(fr.result); };
+      fr.onerror = function () { res(''); };
+      fr.readAsText(file);
+    });
   }
-  function closeNowPlaying() {
-    if ($('npView').hidden) return;
-    $('npView').hidden = true;
-    applyViewTint();
+  function parseLyrics(text) {
+    var lines = [], plain = [];
+    text.replace(/\r/g, '').split('\n').forEach(function (l) {
+      var m = /^((?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\])+)(.*)$/.exec(l.trim());
+      if (m) {
+        var txt = m[2].trim(), re = /\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]/g, tm;
+        while ((tm = re.exec(m[1]))) lines.push({ t: parseInt(tm[1], 10) * 60 + parseFloat(tm[2].replace(':', '.')), text: txt });
+      } else if (!/^\[[a-z]+:.*\]$/i.test(l.trim())) {
+        plain.push(l.trim());           // skip [ar:…] style header tags
+      }
+    });
+    if (lines.length) {
+      lines.sort(function (a, b) { return a.t - b.t; });
+      return { lines: lines.filter(function (x) { return x.text; }), synced: true };
+    }
+    while (plain.length && !plain[0]) plain.shift();
+    return plain.length ? { lines: plain.map(function (x) { return { t: 0, text: x }; }), synced: false } : null;
+  }
+  function loadLyrics(t) {
+    state.lyrics = null;
+    lyricIdx = -1;
+    renderLyrics();
+    var key = t.path.replace(/\.[^.\/]+$/, '').toLowerCase();
+    var lrc = state.lrcFiles.get(key);
+    var p = lrc ? readText(lrc) : Meta.read(t.file, t.ext, true).then(function (m) { return m.lyrics; });
+    p.then(function (txt) {
+      if (state.current !== t) return;
+      state.lyrics = txt ? parseLyrics(txt) : null;
+      renderLyrics();
+    }).catch(function () { /* no lyrics */ });
+  }
+  var lyricIdx = -1;
+  function renderLyrics() {
+    var v = $('lyricsView'), L = state.lyrics;
+    if (!state.current) { v.innerHTML = '<div class="insp-empty">Play a song to see its lyrics.</div>'; return; }
+    if (!L || !L.lines.length) {
+      v.className = 'insp-body thin-scroll';
+      v.innerHTML = '<div class="insp-empty">No lyrics found for this song.<br><br>Tip: put a <code>.lrc</code> file with the same name next to the song for synced lyrics, or add lyrics to the file’s tags.</div>';
+      return;
+    }
+    v.className = 'insp-body thin-scroll ' + (L.synced ? 'lyrics-synced' : 'lyrics-plain');
+    v.innerHTML = L.lines.map(function (l, i) {
+      return l.text ? '<div class="lyric-line" data-li="' + i + '">' + esc(l.text) + '</div>' : '<div class="lyric-gap"></div>';
+    }).join('');
+    lyricIdx = -1;
+    updateLyricHighlight();
+  }
+  function updateLyricHighlight() {
+    var L = state.lyrics;
+    if (!L || !L.synced) return;
+    var t = audio.currentTime + 0.2, idx = -1;
+    for (var i = 0; i < L.lines.length; i++) { if (L.lines[i].t <= t) idx = i; else break; }
+    if (idx === lyricIdx) return;
+    var v = $('lyricsView');
+    var prev = v.querySelector('.lyric-line.active');
+    if (prev) prev.classList.remove('active');
+    lyricIdx = idx;
+    var el = idx >= 0 ? v.querySelector('[data-li="' + idx + '"]') : null;
+    if (el) {
+      el.classList.add('active');
+      if (!$('lyricsView').hidden && !audio.paused) {
+        var top = el.offsetTop - v.clientHeight / 2 + el.clientHeight / 2;
+        v.scrollTop = Math.max(0, top);
+      }
+    }
+  }
+
+  /* ---------------- window presets, drawers, inspector ---------------- */
+  var shell = $('shell'), stageWrap = $('stageWrap');
+  function applyPreset(p) {
+    settings.preset = p;
+    saveSettings();
+    stageWrap.classList.toggle('framed', p !== 'full');
+    var availW = window.innerWidth;
+    if (p === 'split') {
+      shell.style.width = Math.min(720, availW - 36) + 'px';
+      shell.style.height = 'min(760px, calc(100vh - 36px))';
+    } else if (p === 'mini') {
+      shell.style.width = Math.min(368, availW - 36) + 'px';
+      shell.style.height = 'min(660px, calc(100vh - 36px))';
+    } else {
+      shell.style.width = '';
+      shell.style.height = '';
+    }
+    $$('.presets [data-preset]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-preset') === p); });
+    closeDrawers();
+    setTimeout(updateWidthClasses, 380);
+  }
+  function updateWidthClasses() {
+    var w = shell.getBoundingClientRect().width;
+    shell.classList.toggle('w-split', w < 860);
+    shell.classList.toggle('w-compact', w < 600);
+    shell.classList.toggle('w-mini', w < 420);
+    var mode = w < 420 ? 'Mini' : w < 600 ? 'Compact' : w < 860 ? 'Split' : 'Studio';
+    $('sizeBadge').textContent = Math.round(w) + 'px · ' + mode;
+    if (w >= 860) $('inspector').classList.remove('drawer-open');
+    if (w >= 600) $('sidebar').classList.remove('drawer-open');
+    if (!$('inspector').classList.contains('drawer-open') && !$('sidebar').classList.contains('drawer-open')) $('drawerBackdrop').classList.remove('open');
+    renderRows();
+  }
+  function closeDrawers() {
+    $('sidebar').classList.remove('drawer-open');
+    $('inspector').classList.remove('drawer-open');
+    $('drawerBackdrop').classList.remove('open');
+  }
+  function openDrawer(el) {
+    var willOpen = !el.classList.contains('drawer-open');
+    closeDrawers();
+    if (willOpen) { el.classList.add('drawer-open'); $('drawerBackdrop').classList.add('open'); }
+  }
+  function toggleInspector() {
+    if (shell.classList.contains('w-split')) { openDrawer($('inspector')); return; }
+    settings.inspector = settings.inspector === false;
+    saveSettings();
+    applyInspectorSetting();
+  }
+  function applyInspectorSetting() {
+    var show = settings.inspector !== false;
+    $('workspace').classList.toggle('inspector-hidden', !show);
+    $('btnInspector').classList.toggle('on', show);
+    setTimeout(renderRows, 50);
+  }
+  function setInspTab(tab) {
+    state.inspTab = tab;
+    $('tabQueue').classList.toggle('on', tab === 'queue');
+    $('tabLyrics').classList.toggle('on', tab === 'lyrics');
+    $('queueView').hidden = tab !== 'queue';
+    $('lyricsView').hidden = tab !== 'lyrics';
+    if (tab === 'lyrics') { lyricIdx = -1; updateLyricHighlight(); }
+  }
+  function showInspector(tab) {
+    setInspTab(tab);
+    if (shell.classList.contains('w-split')) { if (!$('inspector').classList.contains('drawer-open')) openDrawer($('inspector')); }
+    else if (settings.inspector === false) { settings.inspector = true; saveSettings(); applyInspectorSetting(); }
   }
 
   // Remember the last song + position so the next visit can resume.
@@ -1337,7 +1961,7 @@
         subdirs.push([entry, path]);
       } else {
         var ext = extOf(entry.name);
-        if (AUDIO_EXT.indexOf(ext) < 0 && IMG_EXT.indexOf(ext) < 0 && ext !== 'm4p') continue;
+        if (AUDIO_EXT.indexOf(ext) < 0 && IMG_EXT.indexOf(ext) < 0 && ext !== 'm4p' && ext !== 'lrc') continue;
         try { out.push({ file: await entry.getFile(), path: path }); } catch (e) { /* unreadable */ }
         if (out.length % 200 === 0) setStatus('Looking for music… ' + out.length + ' files');
       }
@@ -1401,14 +2025,22 @@
 
   /* -------- remembering folders (Chrome / Edge: File System Access API) -------- */
 
+  var dbPromise = null;
   function idbOpen() {
-    return new Promise(function (resolve, reject) {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
       if (!window.indexedDB) { reject(new Error('no indexedDB')); return; }
-      var r = indexedDB.open('tunebox', 1);
-      r.onupgradeneeded = function () { r.result.createObjectStore('kv'); };
+      var r = indexedDB.open('tunebox', 2);
+      r.onupgradeneeded = function () {
+        var db = r.result;
+        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+        if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+      };
       r.onsuccess = function () { resolve(r.result); };
       r.onerror = function () { reject(r.error); };
     });
+    dbPromise.catch(function () { dbPromise = null; });
+    return dbPromise;
   }
   function idbGet(key) {
     return idbOpen().then(function (db) {
@@ -1446,7 +2078,7 @@
     for (var i = 0; i < list.length; i++) {
       var perm = 'prompt';
       try { perm = await list[i].queryPermission({ mode: 'read' }); } catch (e) { /* ignore */ }
-      (perm === 'granted' ? ready : needAsk).push(list[i]);
+      (perm === 'granted' && settings.autoOpen !== false ? ready : needAsk).push(list[i]);
     }
     for (var j = 0; j < ready.length; j++) await scanHandle(ready[j]);
     if (needAsk.length) {
@@ -1465,6 +2097,302 @@
     }
   }
 
+  /* ------------------------------ settings page ------------------------------ */
+
+  var ACCENTS = {
+    amber: [[245, 158, 11], [59, 130, 246]],
+    coral: [[255, 106, 61], [232, 54, 107]],
+    rose: [[236, 72, 153], [168, 85, 247]],
+    violet: [[139, 92, 246], [236, 72, 153]],
+    blue: [[59, 130, 246], [6, 182, 212]],
+    green: [[16, 185, 129], [6, 182, 212]]
+  };
+  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen'];
+  function isOn(key) { return DEFAULT_ON.indexOf(key) >= 0 ? settings[key] !== false : !!settings[key]; }
+
+  function applyLook() {
+    var root = document.documentElement;
+    root.style.setProperty('--orb-mul', typeof settings.glow === 'number' ? settings.glow : 1);
+    root.classList.toggle('reduce-motion', !!settings.reduceMotion);
+    $('viz').hidden = settings.viz === false;
+    applyViewTint();
+  }
+
+  function sSeg(key, opts, cur) {
+    return '<div class="seg set-seg" data-set="' + key + '">' + opts.map(function (o) {
+      return '<button data-val="' + o[0] + '"' + (String(cur) === String(o[0]) ? ' class="on"' : '') + '>' + o[1] + '</button>';
+    }).join('') + '</div>';
+  }
+  function sSwitch(key) {
+    var on = isOn(key);
+    return '<button class="switch' + (on ? ' on' : '') + '" data-toggle="' + key + '" role="switch" aria-checked="' + on + '" aria-label="' + key + '"><i></i></button>';
+  }
+  function sSlider(key, min, max, step, val, label) {
+    return '<div class="set-slider"><input type="range" class="mac-slider" data-slide="' + key + '" min="' + min + '" max="' + max +
+      '" step="' + step + '" value="' + val + '" style="--p:' + ((val - min) / (max - min) * 100) + '%"><b data-out="' + key + '">' + label + '</b></div>';
+  }
+  function sRow(title, desc, ctl, extra) {
+    return '<div class="set-row' + (extra ? ' ' + extra : '') + '"><div class="set-text"><div class="set-title">' + title + '</div>' +
+      (desc ? '<div class="set-desc">' + desc + '</div>' : '') + '</div><div class="set-ctl">' + ctl + '</div></div>';
+  }
+  function sCard(title, sub, rows) {
+    return '<section class="set-card"><div class="set-card-head"><h3>' + title + '</h3>' + (sub ? '<p>' + sub + '</p>' : '') + '</div>' + rows + '</section>';
+  }
+  function sBtn(label, attr, primary) {
+    return '<button class="btn small' + (primary ? ' primary' : '') + '" ' + attr + '>' + label + '</button>';
+  }
+
+  var SLIDE_LABELS = {
+    glow: function (v) { return Math.round(v * 100) + '%'; },
+    crossfade: function (v) { return +v ? v + ' s' : 'Off'; },
+    speed: function (v) { return (+v).toFixed(2) + '×'; },
+    reverb: function (v) { return Math.round(v * 100) + '%'; },
+    preamp: function (v) { return (v > 0 ? '+' : '') + v + ' dB'; },
+    djVariety: function (v) { return v < 0.34 ? 'Familiar' : v < 0.67 ? 'Balanced' : 'Adventurous'; }
+  };
+
+  function offlineText() {
+    if (location.protocol === 'file:') return 'You opened Tunebox from a file on your Mac, so it already works without internet.';
+    if (offlineReady) return 'Ready — Tunebox will open and play your music even with no internet.';
+    if (!('serviceWorker' in navigator)) return 'This browser can’t store Tunebox for offline use. Try Chrome or Safari.';
+    return 'Getting ready… open Tunebox once more while online and it will work offline.';
+  }
+
+  function renderSettings() {
+    var v = $('settingsView');
+    if (state.view !== 'settings') return;
+    var theme = settings.theme || 'auto';
+    var accent = settings.accent || 'art';
+    var eqName = eqPresetKey() ? EQ_PRESETS[eqPresetKey()].name : 'Custom';
+    var vibe = vibeKey() ? VIBES[vibeKey()].name : 'Custom';
+    var swatches = '<div class="swatches" data-set="accent">' +
+      '<button data-val="art" class="sw-art' + (accent === 'art' ? ' on' : '') + '" title="From album art"></button>' +
+      Object.keys(ACCENTS).map(function (k) {
+        var a = ACCENTS[k];
+        return '<button data-val="' + k + '"' + (accent === k ? ' class="on"' : '') + ' title="' + k + '" style="background:linear-gradient(135deg,rgb(' + a[0].join(',') + '),rgb(' + a[1].join(',') + '))"></button>';
+      }).join('') + '</div>';
+    var cached = metaCache ? metaCache.size : 0;
+
+    v.innerHTML =
+      sCard('Appearance', 'Make Tunebox look the way you like.',
+        sRow('Theme', 'Auto follows your Mac.', sSeg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], theme)) +
+        sRow('Accent colour', accent === 'art' ? 'Colours come from the album art.' : 'Fixed colour.', swatches) +
+        sRow('Background glow', '', sSlider('glow', 0, 1.6, 0.05, typeof settings.glow === 'number' ? settings.glow : 1, SLIDE_LABELS.glow(typeof settings.glow === 'number' ? settings.glow : 1))) +
+        sRow('Visualizer', 'The moving bars under the cover.', sSwitch('viz')) +
+        sRow('Reduce motion', 'Fewer animations — easier on older Macs.', sSwitch('reduceMotion')) +
+        sRow('Window size', 'Same as the coloured buttons top-left.', sSeg('preset', [['full', 'Full'], ['split', 'Split'], ['mini', 'Mini']], settings.preset || 'full'))) +
+
+      sCard('Playback', 'Fades, speed and effects.',
+        sRow('Crossfade', 'Blend the end of a song into the next.' + (canCrossfade() ? '' : ' (Not available on this device.)'),
+          sSlider('crossfade', 0, 12, 1, settings.crossfade || 0, SLIDE_LABELS.crossfade(settings.crossfade || 0))) +
+        sRow('Smooth skips', 'Quick fade when you press next.', sSwitch('smoothSkip')) +
+        sRow('Soft pause', 'Fade out/in on pause and play.', sSwitch('softPause')) +
+        sRow('Vibe', vibe, '<div class="vibe-chips">' + Object.keys(VIBES).map(function (k) {
+          return '<button data-vibe="' + k + '"' + (vibeKey() === k ? ' class="on"' : '') + '>' + VIBES[k].name + '</button>';
+        }).join('') + '</div>', 'wide') +
+        sRow('Speed', '', sSlider('speed', 0.5, 1.5, 0.01, speed(), SLIDE_LABELS.speed(speed()))) +
+        sRow('Keep pitch', 'Off = slowed songs sound deeper, sped-up songs higher.', sSwitch('preservePitch')) +
+        sRow('Reverb', '', sSlider('reverb', 0, 0.8, 0.01, settings.reverb || 0, SLIDE_LABELS.reverb(settings.reverb || 0))) +
+        sRow('Volume boost', 'Extra loudness. A limiter stops it from crackling.', sSlider('preamp', -12, 12, 1, settings.preamp || 0, SLIDE_LABELS.preamp(settings.preamp || 0)))) +
+
+      sCard('Equalizer', '10 bands, ±15 dB.',
+        sRow('Current sound', eqName, sBtn('Open equalizer', 'data-cmd="eq"', true))) +
+
+      sCard('Tunebox DJ', 'Plays songs that go well together, forever. No internet or AI service — it learns from what you play and skip.',
+        sRow('DJ', settings.dj ? 'On — it’s picking your songs.' : 'Off', sSwitch('dj')) +
+        sRow('Variety', 'Familiar sticks close to what’s playing; adventurous mixes it up.',
+          sSlider('djVariety', 0, 1, 0.05, typeof settings.djVariety === 'number' ? settings.djVariety : 0.5, SLIDE_LABELS.djVariety(typeof settings.djVariety === 'number' ? settings.djVariety : 0.5))) +
+        sRow('No repeat artists', 'Avoid the same artist twice in a row.', sSwitch('djArtistGap')) +
+        sRow('Favour favourites', 'Hearted songs come up more.', sSwitch('djFavs')) +
+        sRow('Listening history', Object.keys(stats).length + ' songs learned', sBtn('Reset', 'data-action="reset-history"'))) +
+
+      sCard('Library', plural(state.tracks.length, 'song') + ' · ' + plural(getAlbums().length, 'album') + ' · song info saved for ' + plural(cached, 'song'),
+        sRow('Open library automatically', 'Load your music folder when Tunebox starts (Chrome).', sSwitch('autoOpen')) +
+        sRow('Add music', 'Folders or single songs.', sBtn('Add folder', 'data-cmd="open-folder"', true) + ' ' + sBtn('Add songs', 'data-cmd="add-files"')) +
+        sRow('Rescan folders', 'Pick up new songs you’ve added.', sBtn('Rescan', 'data-action="rescan"')) +
+        sRow('Saved song info', 'Makes big libraries load instantly. Clear it if tags look wrong.', sBtn('Clear', 'data-action="clear-cache"')) +
+        sRow('Remove everything', 'Your music files are never touched.', sBtn('Clear library', 'data-action="clear"'))) +
+
+      sCard('App', '',
+        sRow('Works offline', offlineText(), '') +
+        sRow('Install app', isStandalone() ? 'Installed — open it from your Dock or Launchpad.' : 'Opens in its own window, like a Mac app.',
+          isStandalone() ? '' : sBtn('Install', 'data-action="install"', true)) +
+        sRow('Keyboard shortcuts', 'Space play · ←/→ seek · Shift+←/→ skip · ↑/↓ volume · / search · S shuffle · R repeat · M mute · L favourite · E equalizer · D DJ · F now playing · I up next · T theme · , settings', '', 'wide')) +
+
+      '<p class="set-foot">Tunebox · your music stays on your device.</p>';
+  }
+
+  function applySetting(key, val) {
+    switch (key) {
+      case 'theme':
+        if (val === 'auto') delete settings.theme; else settings.theme = val;
+        applyTheme();
+        break;
+      case 'preset': applyPreset(val); break;
+      case 'dj': if (val) startDj(); else stopDj(); return;
+      case 'speed': case 'preservePitch': case 'reverb': case 'preamp': applyFx(); break;
+      case 'accent': case 'glow': case 'viz': case 'reduceMotion': applyLook(); break;
+    }
+    saveSettings();
+  }
+
+  $('settingsView').addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    var segEl = b.closest('[data-set]');
+    if (segEl && b.hasAttribute('data-val')) {
+      var key = segEl.getAttribute('data-set'), val = b.getAttribute('data-val');
+      if (key !== 'theme' && key !== 'preset') settings[key] = val;
+      applySetting(key, val);
+      renderSettings();
+      return;
+    }
+    if (b.hasAttribute('data-toggle')) {
+      var k = b.getAttribute('data-toggle'), on = !isOn(k);
+      if (k !== 'dj') settings[k] = on;
+      applySetting(k, on);
+      renderSettings();
+      return;
+    }
+    if (b.hasAttribute('data-vibe')) { setVibe(b.getAttribute('data-vibe')); return; }
+    var act = b.getAttribute('data-action');
+    if (act === 'reset-history') {
+      if (!confirm('Forget what Tunebox DJ has learned about your listening?')) return;
+      stats = {}; history = []; saveStatsSoon(); renderSettings(); toast('Listening history cleared', 1500);
+    } else if (act === 'rescan') {
+      rescanFolders();
+    } else if (act === 'clear-cache') {
+      clearMetaCache().then(function () { renderSettings(); toast('Saved song info cleared', 1500); });
+    } else if (act === 'clear') {
+      if (confirm('Remove all songs from Tunebox? (Your files are not touched.)')) clearLibrary();
+    } else if (act === 'install') {
+      installApp();
+    }
+  });
+  $('settingsView').addEventListener('input', function (e) {
+    var key = e.target.getAttribute('data-slide');
+    if (!key) return;
+    var r = e.target, val = +r.value;
+    r.style.setProperty('--p', ((val - r.min) / (r.max - r.min) * 100) + '%');
+    settings[key] = val;
+    var out = $('settingsView').querySelector('[data-out="' + key + '"]');
+    if (out) out.textContent = SLIDE_LABELS[key](val);
+    applySetting(key, val);
+  });
+
+  /* ------------------------------ saved song info (IndexedDB) ------------------------------ */
+  // Tags and durations are remembered per file, so reopening a library of thousands of songs
+  // is instant — only new or changed files are read again.
+  var metaCache = null, metaDirty = new Set();
+  function loadMetaCache() {
+    if (metaCache) return Promise.resolve(metaCache);
+    return idbOpen().then(function (db) {
+      return new Promise(function (res) {
+        var m = new Map();
+        try {
+          var req = db.transaction('meta').objectStore('meta').openCursor();
+          req.onsuccess = function () {
+            var c = req.result;
+            if (c) { m.set(c.key, c.value); c.continue(); } else res(m);
+          };
+          req.onerror = function () { res(m); };
+        } catch (e) { res(m); }
+      });
+    }).catch(function () { return new Map(); }).then(function (m) { metaCache = m; return m; });
+  }
+  var META_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'track', 'disc', 'year', 'genre', 'bpm', 'duration'];
+  function applyCache(tracks) {
+    var need = [];
+    tracks.forEach(function (t) {
+      var r = metaCache && metaCache.get(t.path);
+      if (r && r.sz === t.file.size && r.mt === t.file.lastModified) {
+        META_FIELDS.forEach(function (f) { if (r[f] !== undefined && r[f] !== '') t[f] = r[f]; });
+        t.tagged = true;
+        computeAlbumKey(t);
+      } else {
+        need.push(t);
+      }
+    });
+    return need;
+  }
+  function markMetaDirty(t) { metaDirty.add(t); flushMetaSoon(); }
+  var flushMetaSoon = debounce(function () {
+    if (!metaDirty.size) return;
+    var list = Array.from(metaDirty);
+    metaDirty = new Set();
+    idbOpen().then(function (db) {
+      var tx = db.transaction('meta', 'readwrite'), store = tx.objectStore('meta');
+      list.forEach(function (t) {
+        var r = { sz: t.file.size, mt: t.file.lastModified };
+        META_FIELDS.forEach(function (f) { r[f] = t[f]; });
+        store.put(r, t.path);
+        if (metaCache) metaCache.set(t.path, r);
+      });
+    }).catch(function () { /* ignore */ });
+  }, 2500);
+  function clearMetaCache() {
+    return idbOpen().then(function (db) {
+      return new Promise(function (res) {
+        var tx = db.transaction('meta', 'readwrite');
+        tx.objectStore('meta').clear();
+        tx.oncomplete = tx.onerror = function () { res(); };
+      });
+    }).catch(function () {}).then(function () { metaCache = new Map(); });
+  }
+  async function rescanFolders() {
+    if (!hasFSA) { toast('Choose your music folder again to pick up new songs.'); openFolder(); return; }
+    var list = (await idbGet('handles')) || [];
+    if (!list.length) { openFolder(); return; }
+    for (var i = 0; i < list.length; i++) {
+      var p = 'prompt';
+      try { p = await list[i].queryPermission({ mode: 'read' }); } catch (e) { /* ignore */ }
+      if (p !== 'granted') { try { p = await list[i].requestPermission({ mode: 'read' }); } catch (e) { /* ignore */ } }
+      if (p === 'granted') await scanHandle(list[i]);
+    }
+  }
+
+  /* ------------------------------ offline + install ------------------------------ */
+  var deferredPrompt = null, offlineReady = false;
+  function isStandalone() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  }
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferredPrompt = e;
+    $('btnInstall').hidden = false;
+    if (state.view === 'settings') renderSettings();
+  });
+  window.addEventListener('appinstalled', function () {
+    deferredPrompt = null;
+    $('btnInstall').hidden = true;
+    toast('Tunebox installed — find it in your Dock or Launchpad.', 3500);
+  });
+  function installApp() {
+    if (!deferredPrompt) {
+      toast(IS_IOS ? 'In Safari, tap Share → Add to Home Screen.' : 'In Chrome, click the install icon at the right of the address bar.', 4000);
+      return;
+    }
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function () { deferredPrompt = null; $('btnInstall').hidden = true; });
+  }
+  $('btnInstall').addEventListener('click', installApp);
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    navigator.serviceWorker.register('sw.js').then(function (reg) {
+      offlineReady = !!navigator.serviceWorker.controller;
+      reg.addEventListener('updatefound', function () {
+        var w = reg.installing;
+        if (!w) return;
+        w.addEventListener('statechange', function () {
+          if (w.state === 'activated') {
+            if (!offlineReady) toast('Tunebox now works offline ✓', 3000);
+            offlineReady = true;
+            if (state.view === 'settings') renderSettings();
+          }
+        });
+      });
+    }).catch(function () { /* offline mode unavailable */ });
+  }
+
   /* ------------------------------ events ------------------------------ */
 
   var COMMANDS = {
@@ -1479,8 +2407,10 @@
     'play-view': function () { playIds(getList(), 0); },
     'shuffle-view': function () { var ids = getList(); playIds(ids, Math.floor(Math.random() * ids.length), true); },
     fav: toggleFav,
-    fullscreen: function () { if ($('npView').hidden) openNowPlaying(); else closeNowPlaying(); },
-    eq: function () { toggleEqPanel(); }
+    fullscreen: function () { if (state.stage) goBack(); else openNowPlaying(); },
+    eq: function () { toggleEqPanel(); },
+    dj: function () { toggleDj(); },
+    'dj-start': function () { toggleDj(); if (settings.dj) showStage(true); }
   };
   document.addEventListener('click', function (e) {
     var b = e.target.closest('[data-cmd]');
@@ -1507,31 +2437,62 @@
   });
 
   $('btnBack').addEventListener('click', goBack);
-  $('npOpen').addEventListener('click', openNowPlaying);
-  $('npClose').addEventListener('click', closeNowPlaying);
   function goToCurrentAlbum() { if (state.current) setView('album', state.current.albumKey); }
-  $('npvSub').addEventListener('click', goToCurrentAlbum);
   $('stSub').addEventListener('click', goToCurrentAlbum);
-  $('stNext').addEventListener('click', function (e) {
+  $('queueList').addEventListener('click', function (e) {
     var q = e.target.closest('.qrow');
     if (!q) return;
     state.qIndex = +q.getAttribute('data-q');
     loadTrack(state.byId.get(state.queue[state.qIndex]), true);
   });
 
-  $('btnEq').addEventListener('click', function () { toggleEqPanel(); });
   $('eqClose').addEventListener('click', function () { toggleEqPanel(false); });
   $('eqPresets').addEventListener('click', function (e) {
     var b = e.target.closest('[data-eq]');
-    if (b) setEq(EQ_PRESETS[b.getAttribute('data-eq')]);
+    if (b) setEq(EQ_PRESETS[b.getAttribute('data-eq')].v);
   });
-  ['eqBass', 'eqMid', 'eqTreble'].forEach(function (id, i) {
-    $(id).addEventListener('input', function () {
-      var v = eq.slice();
-      v[i] = +this.value;
-      setEq(v);
+  buildEqBands();
+  $('eqBands').addEventListener('input', function (e) {
+    var i = e.target.getAttribute('data-band');
+    if (i === null) return;
+    var v = eq.slice();
+    v[+i] = +e.target.value;
+    setEq(v);
+  });
+  $('vibes').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-vibe]');
+    if (b) setVibe(b.getAttribute('data-vibe'));
+  });
+  $('eqReset').addEventListener('click', function () {
+    settings.preamp = 0;
+    setVibe('normal');
+    setEq(EQ_PRESETS.flat.v);
+  });
+  [['eqPreamp', 'preamp'], ['fxSpeed', 'speed'], ['fxReverb', 'reverb']].forEach(function (pair) {
+    $(pair[0]).addEventListener('input', function () {
+      settings[pair[1]] = +this.value;
+      saveSettings();
+      applyFx();
+      renderEq();
     });
   });
+  $('lyricsView').addEventListener('click', function (e) {
+    var l = e.target.closest('.lyric-line');
+    if (!l || !state.lyrics || !state.lyrics.synced) return;
+    audio.currentTime = state.lyrics.lines[+l.getAttribute('data-li')].t;
+    if (audio.paused) play();
+  });
+  $('tabQueue').addEventListener('click', function () { setInspTab('queue'); });
+  $('tabLyrics').addEventListener('click', function () { setInspTab('lyrics'); });
+  $('btnInspector').addEventListener('click', toggleInspector);
+  $('closeInspector').addEventListener('click', closeDrawers);
+  $('btnLib').addEventListener('click', function () { openDrawer($('sidebar')); });
+  $('drawerBackdrop').addEventListener('click', closeDrawers);
+  $$('[data-preset]').forEach(function (b) {
+    b.addEventListener('click', function () { applyPreset(b.getAttribute('data-preset')); });
+  });
+  if (window.ResizeObserver) new ResizeObserver(updateWidthClasses).observe(shell);
+  window.addEventListener('resize', function () { if (settings.preset && settings.preset !== 'full') applyPreset(settings.preset); else updateWidthClasses(); });
   $('btnTheme').addEventListener('click', toggleTheme);
 
   var searchTimer;
@@ -1619,13 +2580,12 @@
 
   $$('.mute-btn').forEach(function (b) {
     b.addEventListener('click', function () {
-      if (audio.volume === 0) { audio.volume = 0.5; audio.muted = false; } else audio.muted = !audio.muted;
+      if (vol === 0) setVolume(0.5); else setMuted(!muted);
     });
   });
   $$('.vol-range').forEach(function (r) {
     r.addEventListener('input', function () {
-      audio.volume = +this.value;
-      audio.muted = false;
+      setVolume(+this.value);
     });
   });
   $$('.seek-range').forEach(function (r) {
@@ -1656,17 +2616,20 @@
     else if (k === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); prev(); }
     else if (k === 'ArrowRight') { e.preventDefault(); audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5); }
     else if (k === 'ArrowLeft') { e.preventDefault(); audio.currentTime = Math.max(0, audio.currentTime - 5); }
-    else if (k === 'ArrowUp') { e.preventDefault(); audio.muted = false; audio.volume = Math.min(1, audio.volume + 0.05); }
-    else if (k === 'ArrowDown') { e.preventDefault(); audio.volume = Math.max(0, audio.volume - 0.05); }
+    else if (k === 'ArrowUp') { e.preventDefault(); setVolume(vol + 0.05); }
+    else if (k === 'ArrowDown') { e.preventDefault(); setVolume(vol - 0.05); }
     else if (k === '/') { e.preventDefault(); ($('search').offsetParent ? $('search') : $('search2')).focus(); }
     else if (k === 's' || k === 'S') toggleShuffle();
     else if (k === 'r' || k === 'R') cycleRepeat();
-    else if (k === 'm' || k === 'M') audio.muted = !audio.muted;
-    else if (k === 'f' || k === 'F') { if ($('npView').hidden) openNowPlaying(); else closeNowPlaying(); }
+    else if (k === 'm' || k === 'M') setMuted(!muted);
+    else if (k === 'd' || k === 'D') toggleDj();
+    else if (k === 'f' || k === 'F') COMMANDS.fullscreen();
+    else if (k === 'i' || k === 'I') toggleInspector();
+    else if (k === ',') setView('settings');
     else if (k === 'l' || k === 'L') toggleFav();
     else if (k === 'e' || k === 'E') toggleEqPanel();
     else if (k === 't' || k === 'T') toggleTheme();
-    else if (k === 'Escape') { closeNowPlaying(); toggleEqPanel(false); }
+    else if (k === 'Escape') { closeDrawers(); toggleEqPanel(false); }
     else if (k === 'Enter' && state.selectedId) {
       var i = getList().indexOf(state.selectedId);
       if (i >= 0) playFromRow(i);
@@ -1698,6 +2661,11 @@
   }
 
   updateVolume();
+  applyPreset(settings.preset || 'full');
+  applyInspectorSetting();
+  updateWidthClasses();
+  applyLook();
+  updateDjUi();
   startViz();
   updateModes();
   updateNowPlaying();
@@ -1705,5 +2673,10 @@
   checkRemembered();
 
   // exposed for debugging in the console
-  window.Tunebox = { state: state, audio: audio };
+  window.Tunebox = {
+    state: state, settings: settings,
+    get audio() { return audio; },
+    get graph() { return !!ac; },
+    get fading() { return !!fade; }
+  };
 })();

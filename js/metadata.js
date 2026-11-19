@@ -5,7 +5,7 @@
  *   - FLAC: Vorbis comments + embedded picture
  * Reads only the parts of the file it needs, so scanning big libraries stays fast.
  *
- * Usage: Meta.read(file, ext, wantCover) -> Promise<{title, artist, album, albumArtist,
+ * Usage: Meta.read(file, ext, full) -> Promise<{title, artist, album, albumArtist, lyrics,
  *        track, disc, year, cover: Blob|null}>
  */
 var Meta = (function () {
@@ -93,8 +93,24 @@ var Meta = (function () {
     TPE2: 'albumArtist', TP2: 'albumArtist',
     TRCK: 'track', TRK: 'track',
     TPOS: 'disc', TPA: 'disc',
-    TYER: 'year', TYE: 'year', TDRC: 'year'
+    TYER: 'year', TYE: 'year', TDRC: 'year',
+    TCON: 'genre', TCO: 'genre',
+    TBPM: 'bpm', TBP: 'bpm'
   };
+  var GENRES = ['Blues','Classic Rock','Country','Dance','Disco','Funk','Grunge','Hip-Hop','Jazz','Metal','New Age','Oldies',
+    'Other','Pop','R&B','Rap','Reggae','Rock','Techno','Industrial','Alternative','Ska','Death Metal','Pranks','Soundtrack',
+    'Euro-Techno','Ambient','Trip-Hop','Vocal','Jazz+Funk','Fusion','Trance','Classical','Instrumental','Acid','House','Game',
+    'Sound Clip','Gospel','Noise','Alternative Rock','Bass','Soul','Punk','Space','Meditative','Instrumental Pop',
+    'Instrumental Rock','Ethnic','Gothic','Darkwave','Techno-Industrial','Electronic','Pop-Folk','Eurodance','Dream',
+    'Southern Rock','Comedy','Cult','Gangsta','Top 40','Christian Rap','Pop/Funk','Jungle','Native American','Cabaret',
+    'New Wave','Psychedelic','Rave','Showtunes','Trailer','Lo-Fi','Tribal','Acid Punk','Acid Jazz','Polka','Retro',
+    'Musical','Rock & Roll','Hard Rock'];
+  function genreName(g) {
+    if (!g) return '';
+    var m = /^\(?(\d{1,3})\)?$/.exec(g.trim());
+    if (m) return GENRES[+m[1]] || '';
+    return g.replace(/^\(\d+\)/, '').trim();
+  }
 
   function parseID3(b, wantCover, out) {
     var ver = b[3];
@@ -131,6 +147,10 @@ var Meta = (function () {
       var key = ID3_MAP[id];
       if (key) {
         if (!out[key]) out[key] = tidy(decodeText(data[0], data.subarray(1)));
+      } else if (wantCover && !out.lyrics && (id === 'USLT' || id === 'ULT') && data.length > 4) {
+        // encoding, 3-letter language, content descriptor, then the lyrics text
+        var le = data[0], dEndL = termEnd(le, data, 4);
+        if (dEndL > 0) out.lyrics = decodeText(le, data.subarray(dEndL)).replace(/^\uFEFF/, '').replace(/\u0000+$/, '');
       } else if (wantCover && !out.cover && (id === 'APIC' || id === 'PIC')) {
         var enc = data[0], mime, p;
         if (id === 'PIC') {
@@ -244,8 +264,12 @@ var Meta = (function () {
           case '©alb': out.album = text(); break;
           case 'aART': out.albumArtist = text(); break;
           case '©day': out.year = text(); break;
+          case '©gen': out.genre = text(); break;
+          case 'gnre': if (payload.length >= 2) out.genre = String(((payload[0] << 8) | payload[1]) - 1); break;
+          case 'tmpo': if (payload.length >= 2) out.bpm = String((payload[0] << 8) | payload[1]); break;
           case 'trkn': if (payload.length >= 4) out.track = String((payload[2] << 8) | payload[3]); break;
           case 'disk': if (payload.length >= 4) out.disc = String((payload[2] << 8) | payload[3]); break;
+          case '\u00a9lyr': if (wantCover) out.lyrics = dUtf8.decode(payload); break;
           case 'covr':
             if (wantCover && !out.cover) {
               out.cover = new Blob([payload.slice()], { type: dtype === 14 ? 'image/png' : 'image/jpeg' });
@@ -293,6 +317,9 @@ var Meta = (function () {
           else if (k === 'TRACKNUMBER' && !out.track) out.track = v;
           else if (k === 'DISCNUMBER' && !out.disc) out.disc = v;
           else if (k === 'DATE' && !out.year) out.year = v;
+          else if (k === 'GENRE' && !out.genre) out.genre = v;
+          else if (k === 'BPM' && !out.bpm) out.bpm = v;
+          else if ((k === 'LYRICS' || k === 'UNSYNCEDLYRICS' || k === 'SYNCEDLYRICS') && !out.lyrics) out.lyrics = kv.slice(eq + 1);
         }
       } else if (type === 6 && wantCover && !out.cover && len < MAX_TAG_BYTES) {
         var pic = new Uint8Array(await readSlice(file, start, pos));
@@ -328,7 +355,10 @@ var Meta = (function () {
       track: num(raw.track),
       disc: num(raw.disc),
       year: year(raw.year),
-      cover: raw.cover || null
+      genre: genreName(raw.genre),
+      bpm: num(raw.bpm),
+      cover: raw.cover || null,
+      lyrics: raw.lyrics || ''
     };
   }
 

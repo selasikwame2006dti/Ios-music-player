@@ -30,22 +30,25 @@ Tip: bookmark the page so you can open it in one click.
 
 ## Features
 
-- Songs, Albums, Artists, Favourites and Up Next views
-- A Now Playing panel with a big cover, live visualizer, controls and the next few songs
-- A full-screen Now Playing view (click the cover, or press **F**)
-- 3-band equalizer with presets: Flat, Warm, Bass boost, Vocal, Late night and Bright (press **E**)
-- Favourites, saved between visits (press **L**)
-- Light and dark glass themes (press **T**)
-- Colours taken from the album art of what you're looking at or listening to
-- Phone layout with a bottom tab bar
-- Reads song info and album art from the files (MP3, M4A/AAC, FLAC), with `cover.jpg`/`folder.jpg` as a fallback
-- If a song has no tags, guesses the details from `Artist/Album/01 Song.mp3` folders or `Artist - Title` filenames
-- Search across title, artist and album
-- Shuffle, repeat all / repeat one, sortable columns
-- Mac media keys (F7 / F8 / F9) and the macOS Now Playing widget
-- Remembers the last song and where you stopped, plus volume, shuffle and repeat
-- Light and dark mode follow your Mac's setting unless you pick one
-- Draws only the rows on screen, so big libraries stay smooth. The colour glow uses plain gradients rather than live blur, and the visualizer stops while music is paused, which keeps older Macs cool and quiet
+**Playing**
+- Now Playing stage with a big cover, live visualizer, and synced or plain lyrics
+- **Tunebox DJ** (press **D**): an endless, smart mix with no AI service and no internet needed. It picks each next song by genre, artist, era, tempo, energy and your favourites, learns from what you play through and what you skip, and never repeats the same artist twice in a row.
+- **Crossfade** (0–12 s), smooth skips and soft pause
+- **10-band equalizer** (±15 dB) with 12 presets and a volume boost. A built-in limiter keeps big boosts from crackling.
+- **Vibes:** Slowed + Reverb, Chill, Sped Up, Nightcore and Concert Hall, plus free speed and reverb controls
+- Background play: keeps going in other tabs, and works with the Mac media keys and the Now Playing widget
+
+**Library**
+- Songs, Albums, Artists and Favourites
+- Reads tags, album art, genre, BPM and lyrics from MP3, M4A and FLAC files. Synced lyrics come from `.lrc` files saved next to your songs.
+- Remembers song info, so even huge libraries reopen instantly. Only new or changed files are read again.
+- Opens your music folder automatically (Chrome)
+
+**App**
+- Aether-style glass design with light, dark or auto theme, and accent colours from the album art or a colour you pick
+- Mini, Split and Full window sizes, plus a phone layout
+- **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
+- A Settings page for all of the above
 
 ## Keyboard shortcuts
 
@@ -59,11 +62,14 @@ Tip: bookmark the page so you can open it in one click.
 | S | Shuffle |
 | R | Repeat (off → all → one) |
 | M | Mute |
-| F | Open / close full-screen Now Playing |
+| F | Now Playing |
+| D | Tunebox DJ on / off |
+| I | Show / hide Up Next & Lyrics |
+| , | Settings |
 | L | Favourite the current song |
 | E | Equalizer |
 | T | Light / dark theme |
-| Esc | Close Now Playing |
+| Esc | Close panels |
 | Enter | Play selected song |
 
 ## File formats
