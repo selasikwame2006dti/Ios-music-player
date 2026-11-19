@@ -2,137 +2,205 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0e11">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="Tunebox — play the music files on your computer, right in your browser.">
 <title>Tunebox</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-<div class="app">
+<div class="app" id="app">
 
+  <!-- ============ Sidebar ============ -->
   <aside class="sidebar">
     <div class="brand">
-      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M9 18.5a3.5 3.5 0 1 1-2-3.16V5.6a1 1 0 0 1 .76-.97l11-2.75A1 1 0 0 1 20 2.85V16.5a3.5 3.5 0 1 1-2-3.16V7.28l-9 2.25z"/></svg>
-      <span>Tunebox</span>
+      <span class="logo"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 18.5a3.5 3.5 0 1 1-2-3.16V5.6a1 1 0 0 1 .76-.97l11-2.75A1 1 0 0 1 20 2.85V16.5a3.5 3.5 0 1 1-2-3.16V7.28l-9 2.25z"/></svg></span>
+      Tunebox
     </div>
 
-    <div class="sb-actions">
-      <button class="btn primary" id="btnOpenFolder">Open music folder</button>
-      <button class="btn" id="btnAddFiles">Add files…</button>
-    </div>
-
-    <nav class="nav" id="nav">
-      <button class="nav-item active" data-view="songs">Songs <span class="count" id="countSongs"></span></button>
-      <button class="nav-item" data-view="albums">Albums <span class="count" id="countAlbums"></span></button>
-      <button class="nav-item" data-view="artists">Artists <span class="count" id="countArtists"></span></button>
-      <button class="nav-item" data-view="queue">Up Next</button>
+    <nav class="nav">
+      <button class="nav-item active" data-view="songs">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+        <span>Songs</span><em class="count" id="countSongs"></em>
+      </button>
+      <button class="nav-item" data-view="albums">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20m0 14.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9m0-5.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2"/></svg>
+        <span>Albums</span><em class="count" id="countAlbums"></em>
+      </button>
+      <button class="nav-item" data-view="artists">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9m0 2c-3.3 0-9 1.7-9 5v2h18v-2c0-3.3-5.7-5-9-5"/></svg>
+        <span>Artists</span><em class="count" id="countArtists"></em>
+      </button>
+      <button class="nav-item" data-view="queue">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 6h13v2H3zm0 5h13v2H3zm0 5h9v2H3zm15-5v5.3a3 3 0 1 0 2 2.7V13h2v-2z"/></svg>
+        <span>Up Next</span>
+      </button>
     </nav>
 
-    <div class="sb-section" id="foldersSection" hidden>
-      <div class="sb-title">Library folders</div>
+    <div class="sb-section">
+      <div class="sb-title">Library</div>
+      <button class="nav-item subtle" data-cmd="open-folder">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z"/></svg>
+        <span id="lblOpenFolder">Add music folder</span>
+      </button>
+      <button class="nav-item subtle" data-cmd="add-files">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h7v2h-7v7h-2v-7H4v-2h7V4h2z"/></svg>
+        <span>Add songs…</span>
+      </button>
       <ul class="folder-list" id="folderList"></ul>
-      <button class="link-btn" id="btnClear">Clear library</button>
+      <button class="link-btn" id="btnClear" hidden>Clear library</button>
     </div>
 
     <div class="sb-foot" id="scanStatus"></div>
   </aside>
 
-  <main class="main">
-    <header class="topbar">
+  <!-- ============ Main ============ -->
+  <main class="main" id="main">
+    <header class="topbar" id="topbar">
       <button class="icon-btn" id="btnBack" title="Back" hidden>
-        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12z"/></svg>
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12z"/></svg>
       </button>
-      <div class="titles">
-        <h1 id="viewTitle">Songs</h1>
-        <div class="subtitle" id="viewSub"></div>
-      </div>
+      <div class="topbar-title" id="topTitle"></div>
       <div class="spacer"></div>
-      <button class="btn small" id="btnPlayView" hidden>
-        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg> Play
-      </button>
-      <input id="search" class="search" type="search" placeholder="Search   /" autocomplete="off" spellcheck="false">
+      <label class="search">
+        <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M15.5 14h-.8l-.3-.3A6.5 6.5 0 1 0 14 15.5l.3.3v.8l5 5 1.5-1.5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9"/></svg>
+        <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
     </header>
 
-    <div class="banner" id="reopenBanner" hidden>
-      <span id="reopenText">Pick up where you left off.</span>
-      <button class="btn primary small" id="btnReopen">Reopen library</button>
-      <button class="link-btn" id="btnForget">Forget</button>
-    </div>
-
-    <div class="content">
-      <div class="empty" id="empty">
-        <div class="empty-icon">
-          <svg viewBox="0 0 24 24" width="56" height="56"><path fill="currentColor" d="M9 18.5a3.5 3.5 0 1 1-2-3.16V5.6a1 1 0 0 1 .76-.97l11-2.75A1 1 0 0 1 20 2.85V16.5a3.5 3.5 0 1 1-2-3.16V7.28l-9 2.25z"/></svg>
-        </div>
-        <h2>Your music, right from your Mac</h2>
-        <p>Choose the folder where your music lives, or drag a folder or songs onto this window.</p>
-        <button class="btn primary big" id="btnEmptyOpen">Choose music folder</button>
-        <p class="hint">Tip: iTunes / Music libraries are usually in <code>Music › iTunes › iTunes Media › Music</code> or <code>Music › Music › Media</code>.<br>
-        Your files never leave your computer.</p>
+    <div class="scroller" id="scroller">
+      <div class="banner" id="reopenBanner" hidden>
+        <span id="reopenText">Pick up where you left off.</span>
+        <span class="spacer"></span>
+        <button class="btn primary small" id="btnReopen">Reopen library</button>
+        <button class="link-btn" id="btnForget">Forget</button>
       </div>
+
+      <!-- Empty / welcome state -->
+      <div class="empty" id="empty">
+        <div class="disc"><div class="disc-label"></div></div>
+        <h2>Your music, beautifully played.</h2>
+        <p>Point Tunebox at the folder where your songs live. It reads them straight from your
+           computer &mdash; nothing is uploaded, nothing leaves your device.</p>
+        <div class="empty-actions">
+          <button class="btn primary big" data-cmd="open-folder" id="btnEmptyOpen">Choose music folder</button>
+          <button class="btn ghost big" data-cmd="add-files">Pick songs</button>
+        </div>
+        <ul class="chips">
+          <li>MP3 · M4A · FLAC · WAV</li>
+          <li>Album art &amp; tags</li>
+          <li>Media keys</li>
+          <li>Works offline</li>
+        </ul>
+        <p class="hint" id="emptyHint">Or drag a folder onto this window. On a Mac, iTunes music is usually in
+          <code>Music › iTunes › iTunes Media › Music</code> or <code>Music › Music › Media</code>.</p>
+      </div>
+
+      <section class="hero" id="hero" hidden></section>
 
       <div class="songlist" id="songList" hidden>
         <div class="sl-head" id="slHead">
           <div class="c-num" data-sort="num">#</div>
           <div class="c-title" data-sort="title">Title</div>
-          <div class="c-artist" data-sort="artist">Artist</div>
           <div class="c-album" data-sort="album">Album</div>
-          <div class="c-time" data-sort="duration">Time</div>
+          <div class="c-time" data-sort="duration">
+            <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20m0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16m.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7z"/></svg>
+          </div>
         </div>
-        <div class="sl-body" id="slBody" tabindex="0">
-          <div class="sl-spacer" id="slSpacer"></div>
-        </div>
+        <div class="sl-spacer" id="slSpacer"></div>
       </div>
 
       <div class="grid" id="albumGrid" hidden></div>
-      <div class="artist-list" id="artistList" hidden></div>
-      <div class="no-results" id="noResults" hidden>No matches.</div>
+      <div class="grid artist-grid" id="artistGrid" hidden></div>
+      <div class="no-results" id="noResults" hidden>No matches for your search.</div>
     </div>
   </main>
 
-  <footer class="player" id="player">
-    <div class="np">
-      <div class="np-art" id="npArt"></div>
-      <div class="np-text">
-        <div class="np-title" id="npTitle">Not playing</div>
-        <div class="np-sub" id="npSub"></div>
+  <!-- ============ Full-screen Now Playing ============ -->
+  <section class="nowplaying" id="npView" hidden>
+    <div class="npv-bg"></div>
+    <button class="icon-btn npv-close" id="npClose" title="Close (Esc)">
+      <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>
+    </button>
+    <div class="npv-inner">
+      <div class="npv-art cover" id="npvArt"></div>
+      <div class="npv-side">
+        <div class="npv-title" id="npvTitle"></div>
+        <button class="npv-sub" id="npvSub"></button>
+        <div class="seek big">
+          <input type="range" class="range seek-range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+          <div class="seek-times"><span class="t-cur">0:00</span><span class="t-dur">0:00</span></div>
+        </div>
+        <div class="buttons big">
+          <button class="icon-btn toggle" data-cmd="shuffle" title="Shuffle (S)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4zm.3 9.4-1.4 1.4 3.1 3.1-2 2.1H20v-5.5l-2 2z"/></svg></button>
+          <button class="icon-btn" data-cmd="prev" title="Previous"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+          <button class="play-btn" data-cmd="toggle" title="Play / Pause">
+            <svg class="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.1v13.8a1 1 0 0 0 1.5.8l10.8-6.9a1 1 0 0 0 0-1.6L9.5 4.3A1 1 0 0 0 8 5.1"/></svg>
+            <svg class="i-pause" viewBox="0 0 24 24"><rect fill="currentColor" x="6" y="5" width="4" height="14" rx="1"/><rect fill="currentColor" x="14" y="5" width="4" height="14" rx="1"/></svg>
+          </button>
+          <button class="icon-btn" data-cmd="next" title="Next"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6zm10-12v12h2V6z"/></svg></button>
+          <button class="icon-btn toggle" data-cmd="repeat" title="Repeat (R)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg><span class="badge">1</span></button>
+        </div>
+        <div class="npv-next" id="npvNext"></div>
       </div>
     </div>
+  </section>
+
+  <!-- ============ Player bar ============ -->
+  <footer class="player" id="player">
+    <div class="player-tint"></div>
+    <input type="range" class="range seek-range mobile-seek" min="0" max="1000" value="0" step="1" aria-label="Seek">
+
+    <button class="np" id="npOpen" title="Open Now Playing">
+      <div class="np-art cover" id="npArt"></div>
+      <div class="np-text">
+        <div class="np-title" id="npTitle">Not playing</div>
+        <div class="np-sub" id="npSub">Pick a song to start</div>
+      </div>
+    </button>
 
     <div class="transport">
       <div class="buttons">
-        <button class="icon-btn toggle" id="btnShuffle" title="Shuffle (S)">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4zm.3 9.4-1.4 1.4 3.1 3.1-2 2.1H20v-5.5l-2 2z"/></svg>
+        <button class="icon-btn toggle hide-sm" data-cmd="shuffle" title="Shuffle (S)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4zm.3 9.4-1.4 1.4 3.1 3.1-2 2.1H20v-5.5l-2 2z"/></svg></button>
+        <button class="icon-btn hide-sm" data-cmd="prev" title="Previous (Shift+←)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+        <button class="play-btn" data-cmd="toggle" title="Play / Pause (Space)">
+          <svg class="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.1v13.8a1 1 0 0 0 1.5.8l10.8-6.9a1 1 0 0 0 0-1.6L9.5 4.3A1 1 0 0 0 8 5.1"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24"><rect fill="currentColor" x="6" y="5" width="4" height="14" rx="1"/><rect fill="currentColor" x="14" y="5" width="4" height="14" rx="1"/></svg>
         </button>
-        <button class="icon-btn" id="btnPrev" title="Previous (Shift+←)">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
-        </button>
-        <button class="play-btn" id="btnPlay" title="Play / Pause (Space)">
-          <svg class="i-play" viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-          <svg class="i-pause" viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
-        </button>
-        <button class="icon-btn" id="btnNext" title="Next (Shift+→)">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 18l8.5-6L6 6zm10-12v12h2V6z"/></svg>
-        </button>
-        <button class="icon-btn toggle" id="btnRepeat" title="Repeat (R)">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>
-          <span class="badge" id="repeatBadge">1</span>
-        </button>
+        <button class="icon-btn" data-cmd="next" title="Next (Shift+→)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6zm10-12v12h2V6z"/></svg></button>
+        <button class="icon-btn toggle hide-sm" data-cmd="repeat" title="Repeat (R)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg><span class="badge">1</span></button>
       </div>
-      <div class="seek">
-        <span class="time" id="tCur">0:00</span>
-        <input type="range" class="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Seek">
-        <span class="time" id="tDur">0:00</span>
+      <div class="seek hide-sm">
+        <span class="time t-cur">0:00</span>
+        <input type="range" class="range seek-range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+        <span class="time t-dur">0:00</span>
       </div>
     </div>
 
-    <div class="vol">
+    <div class="vol hide-sm">
+      <button class="icon-btn" id="btnQueue" data-cmd="queue" title="Up Next">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 6h13v2H3zm0 5h13v2H3zm0 5h9v2H3zm15-5v5.3a3 3 0 1 0 2 2.7V13h2v-2z"/></svg>
+      </button>
       <button class="icon-btn" id="btnMute" title="Mute (M)">
-        <svg class="i-vol" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4M14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6"/></svg>
-        <svg class="i-mute" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9zm18.4 6.6L19.8 17 17 14.2 14.2 17l-1.4-1.4 2.8-2.8-2.8-2.8 1.4-1.4 2.8 2.8 2.8-2.8 1.4 1.4-2.8 2.8z"/></svg>
+        <svg class="i-vol" viewBox="0 0 24 24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4M14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6"/></svg>
+        <svg class="i-mute" viewBox="0 0 24 24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9zm18.4 6.6L19.8 17 17 14.2 14.2 17l-1.4-1.4 2.8-2.8-2.8-2.8 1.4-1.4 2.8 2.8 2.8-2.8 1.4 1.4-2.8 2.8z"/></svg>
       </button>
       <input type="range" class="range" id="volume" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
     </div>
   </footer>
+
+  <!-- ============ Phone tab bar ============ -->
+  <nav class="tabbar" id="tabbar">
+    <button class="active" data-view="songs"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg><span>Songs</span></button>
+    <button data-view="albums"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20m0 14.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9m0-5.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2"/></svg><span>Albums</span></button>
+    <button data-view="artists"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9m0 2c-3.3 0-9 1.7-9 5v2h18v-2c0-3.3-5.7-5-9-5"/></svg><span>Artists</span></button>
+    <button data-cmd="add-files"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h7v2h-7v7h-2v-7H4v-2h7V4h2z"/></svg><span>Add</span></button>
+  </nav>
 </div>
 
 <input type="file" id="dirInput" webkitdirectory directory multiple hidden>

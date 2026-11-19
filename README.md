@@ -5,24 +5,35 @@ Nothing to install, no account, and no internet needed. Your files never leave y
 
 It was built to run well on older Macs, like a 2013 MacBook Air on macOS Big Sur.
 
+## Open it
+
+**Online:** https://selasikwame2006dti.github.io/Ios-music-player/
+
+Even when opened from that web address, your music is never uploaded. The page only reads the files you pick, and it does that on your own computer.
+
+**Offline:** download the repo (**Code → Download ZIP**), unzip it, and double-click `index.html`.
+
 ## How to use it
 
-1. On GitHub, click **Code → Download ZIP** and unzip it (or `git clone` the repo).
-2. Open the folder and double-click **`index.html`**. It opens in your browser.
+1. Open Tunebox in your browser.
    - **Google Chrome** is recommended. It can remember your music folder between visits.
    - **Safari** works too, but you have to choose your folder again each time.
-3. Click **Choose music folder** and pick the folder where your music lives. Usually that's one of:
+   - **iPhone / iPad:** tap **Choose songs** and select songs from the Files app.
+2. Click **Choose music folder** and pick the folder where your music lives. Usually that's one of:
    - `Music › iTunes › iTunes Media › Music` (older iTunes)
    - `Music › Music › Media` (the Music app)
    - or any folder of MP3s
 
    You can also drag a folder or individual songs onto the window.
 
-Tip: drag `index.html` onto Chrome's bookmarks bar so you can open it in one click.
+Tip: bookmark the page so you can open it in one click.
 
 ## Features
 
 - Songs, Albums, Artists and Up Next views
+- A full-screen Now Playing view (click the song in the player bar, or press **F**)
+- Colours taken from the album art of what you're looking at or listening to
+- Phone layout with a bottom tab bar
 - Reads song info and album art from the files (MP3, M4A/AAC, FLAC), with `cover.jpg`/`folder.jpg` as a fallback
 - If a song has no tags, guesses the details from `Artist/Album/01 Song.mp3` folders or `Artist - Title` filenames
 - Search across title, artist and album
@@ -44,6 +55,8 @@ Tip: drag `index.html` onto Chrome's bookmarks bar so you can open it in one cli
 | S | Shuffle |
 | R | Repeat (off → all → one) |
 | M | Mute |
+| F | Open / close Now Playing |
+| Esc | Close Now Playing |
 | Enter | Play selected song |
 
 ## File formats
