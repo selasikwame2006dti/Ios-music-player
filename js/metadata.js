@@ -191,11 +191,58 @@ var Meta = (function () {
     if (!out.track && b[125] === 0 && b[126]) out.track = String(b[126]);
   }
 
+  // Song length from the first MPEG frame (Xing/Info/VBRI header for VBR, bitrate for CBR)
+  var BR = {
+    v1l1: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+    v1l2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+    v1l3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+    v2l1: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+    v2l3: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
+  };
+  var SRATE = [[11025, 12000, 8000], null, [22050, 24000, 16000], [44100, 48000, 32000]];
+  async function mp3Duration(file, off) {
+    var b = new Uint8Array(await readSlice(file, off, Math.min(file.size, off + 16384)));
+    for (var i = 0; i + 4 < b.length; i++) {
+      if (b[i] !== 0xFF || (b[i + 1] & 0xE0) !== 0xE0) continue;
+      var ver = (b[i + 1] >> 3) & 3, layer = (b[i + 1] >> 1) & 3;
+      var bri = (b[i + 2] >> 4) & 15, sri = (b[i + 2] >> 2) & 3, pad = (b[i + 2] >> 1) & 1, chan = (b[i + 3] >> 6) & 3;
+      if (ver === 1 || layer === 0 || bri === 0 || bri === 15 || sri === 3) continue;
+      var v1 = ver === 3;
+      var table = layer === 3 ? (v1 ? BR.v1l1 : BR.v2l1) : layer === 2 ? (v1 ? BR.v1l2 : BR.v2l3) : (v1 ? BR.v1l3 : BR.v2l3);
+      var br = table[bri] * 1000, sr = SRATE[ver][sri];
+      var spf = layer === 3 ? 384 : layer === 2 ? 1152 : (v1 ? 1152 : 576);
+      var flen = layer === 3 ? (Math.floor(12 * br / sr) + pad) * 4 : Math.floor(spf / 8 * br / sr) + pad;
+      // make sure the next frame follows, so random bytes aren't mistaken for audio
+      if (i + flen + 1 < b.length && !(b[i + flen] === 0xFF && (b[i + flen + 1] & 0xE0) === 0xE0)) continue;
+      var x = i + 4 + (layer === 1 ? (v1 ? (chan === 3 ? 17 : 32) : (chan === 3 ? 9 : 17)) : 0);
+      if (x + 12 <= b.length) {
+        var tag = ascii(b, x, 4);
+        if ((tag === 'Xing' || tag === 'Info') && (u32(b, x + 4) & 1)) { var frames = u32(b, x + 8); if (frames) return frames * spf / sr; }
+      }
+      if (i + 36 + 18 <= b.length && ascii(b, i + 36, 4) === 'VBRI') { var vf = u32(b, i + 36 + 14); if (vf) return vf * spf / sr; }
+      return Math.max(0, file.size - off - i) * 8 / br;
+    }
+    return 0;
+  }
+  async function wavDuration(file) {
+    var b = new Uint8Array(await readSlice(file, 0, Math.min(file.size, 65536)));
+    if (b.length < 12 || ascii(b, 0, 4) !== 'RIFF' || ascii(b, 8, 4) !== 'WAVE') return 0;
+    var p = 12, byteRate = 0;
+    while (p + 8 <= b.length) {
+      var id = ascii(b, p, 4), sz = u32le(b, p + 4);
+      if (id === 'fmt ' && p + 20 <= b.length) byteRate = u32le(b, p + 16);
+      if (id === 'data') return byteRate ? Math.min(sz, file.size - p - 8) / byteRate : 0;
+      p += 8 + sz + (sz & 1);
+    }
+    return 0;
+  }
+
   async function readMP3(file, wantCover) {
     var out = {};
     var head = new Uint8Array(await readSlice(file, 0, 10));
     if (head.length === 10 && ascii(head, 0, 3) === 'ID3' && head[3] >= 2 && head[3] <= 4) {
       var total = Math.min(10 + syncsafe(head, 6), MAX_TAG_BYTES);
+      var tagEnd = 10 + syncsafe(head, 6) + ((head[5] & 0x10) ? 10 : 0);
       var first = wantCover ? total : Math.min(total, SCAN_BYTES);
       var b = new Uint8Array(await readSlice(file, 0, first));
       parseID3(b, wantCover, out);
@@ -208,6 +255,7 @@ var Meta = (function () {
     if (!out.title && file.size > 128) {
       parseID3v1(new Uint8Array(await readSlice(file, file.size - 128, file.size)), out);
     }
+    try { out.duration = await mp3Duration(file, typeof tagEnd === 'number' ? tagEnd : 0); } catch (e) { /* unknown */ }
     return out;
   }
 
@@ -247,6 +295,13 @@ var Meta = (function () {
     }
     if (!moov) return out;
 
+    var mvhd = findAtom(moov, 0, moov.length, 'mvhd');
+    if (mvhd && mvhd.end - mvhd.start >= 28) {
+      var mv = mvhd.start, v1m = moov[mv] === 1;
+      var scale = v1m ? u32(moov, mv + 20) : u32(moov, mv + 12);
+      var dur = v1m ? u32(moov, mv + 24) * 4294967296 + u32(moov, mv + 28) : u32(moov, mv + 16);
+      if (scale) out.duration = dur / scale;
+    }
     var udta = findAtom(moov, 0, moov.length, 'udta');
     if (!udta) return out;
     var meta = findAtom(moov, udta.start, udta.end, 'meta');
@@ -308,7 +363,12 @@ var Meta = (function () {
       var start = pos + 4;
       pos = start + len;
 
-      if (type === 4 && len < MAX_TAG_BYTES) {
+      if (type === 0 && len >= 18) {
+        var si = new Uint8Array(await readSlice(file, start, start + 18));
+        var rate = (si[10] << 12) | (si[11] << 4) | (si[12] >> 4);
+        var samples = (si[13] & 0x0f) * 4294967296 + u32(si, 14);
+        if (rate && samples) out.duration = samples / rate;
+      } else if (type === 4 && len < MAX_TAG_BYTES) {
         var c = new Uint8Array(await readSlice(file, start, pos));
         var p = 4 + u32le(c, 0);
         var count = u32le(c, p); p += 4;
@@ -353,6 +413,8 @@ var Meta = (function () {
       if (ext === 'm4a' || ext === 'm4b' || ext === 'mp4') raw = await readMP4(file, wantCover);
       else if (ext === 'flac') raw = await readFLAC(file, wantCover);
       else raw = await readMP3(file, wantCover); // mp3, and any file that might carry ID3 (wav, aiff…)
+      if (ext === 'wav') raw.duration = await wavDuration(file);
+      else if (['mp3', 'm4a', 'm4b', 'mp4', 'flac'].indexOf(ext) < 0) raw.duration = 0; // only trust lengths we know how to read
     } catch (e) {
       raw = {};
     }
@@ -368,7 +430,8 @@ var Meta = (function () {
       bpm: num(raw.bpm),
       rg: raw.rg ? (parseFloat(String(raw.rg).replace(/[^0-9.+-]/g, '')) || 0) : null,
       cover: raw.cover || null,
-      lyrics: raw.lyrics || ''
+      lyrics: raw.lyrics || '',
+      duration: raw.duration > 0 && isFinite(raw.duration) ? raw.duration : 0
     };
   }
 
