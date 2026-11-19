@@ -53,6 +53,8 @@
   var nextId = 1;
 
   var settings = loadSettings();
+  // live radio (see the Radio section); defined early because the player checks it everywhere
+  var radio = { on: false, station: null, list: [], idx: -1, song: null, el: null, fx: null, plain: null, src: null, meta: null, genre: 'foryou', results: [], loading: false, q: '' };
   state.shuffle = !!settings.shuffle;
   state.repeat = settings.repeat || 'off';
 
@@ -702,12 +704,12 @@
 
   /* ------------------------------ rendering ------------------------------ */
 
-  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next', favorites: 'Favourites', settings: 'Settings', stats: 'Listening Stats', playlists: 'Playlists', connect: 'Connect devices', remote: 'Remote' };
+  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next', favorites: 'Favourites', settings: 'Settings', stats: 'Listening Stats', playlists: 'Playlists', connect: 'Connect devices', remote: 'Remote', radio: 'Radio' };
   var scroller = $('scroller');
 
   function isListView(v) { return v === 'songs' || v === 'queue' || v === 'album' || v === 'artist' || v === 'favorites' || v === 'playlist'; }
   var DETAIL_VIEWS = { album: 1, artist: 1, playlist: 1 };
-  var PAGE_VIEWS = { settings: 1, stats: 1, playlists: 1, connect: 1, remote: 1 };
+  var PAGE_VIEWS = { settings: 1, stats: 1, playlists: 1, connect: 1, remote: 1, radio: 1 };
   function rowH() { return state.view === 'album' ? 48 : 56; }
 
   function setView(view, detail) {
@@ -738,7 +740,7 @@
   }
 
   function showStage(on) {
-    state.stage = !!on && !!state.current;
+    state.stage = !!on && (!!state.current || radio.on);
     $('npStage').hidden = !state.stage;
     document.body.classList.toggle('stage-on', state.stage);
     if (!state.stage) restoreLyrics();
@@ -764,6 +766,7 @@
     $('playlistGrid').hidden = state.view !== 'playlists';
     $('connectView').hidden = state.view !== 'connect';
     $('remoteView').hidden = state.view !== 'remote';
+    $('radioView').hidden = state.view !== 'radio';
     document.body.classList.toggle('view-remote', state.view === 'remote');
     if (state.view !== 'remote') { var rv = $('remoteView'); if (rv.firstChild) rv.innerHTML = ''; }
     $('empty').hidden = has || isSet;
@@ -791,6 +794,7 @@
       if (v === 'playlists') renderPlaylists();
       if (v === 'connect') renderConnect();
       if (v === 'remote') renderRemote();
+      if (v === 'radio' && !soft) openRadio();
       $('noResults').hidden = true;
       return;
     }
@@ -891,6 +895,8 @@
       txt = plural(playlists.length, 'playlist') + ' · plus 4 smart playlists that update themselves';
     } else if (v === 'stats') {
       txt = 'Everything is counted on this device only.';
+    } else if (v === 'radio') {
+      txt = 'Live stations from around the world, free. Tap ♥ on a song you like to find it later. Needs internet.';
     } else if (v === 'connect') {
       txt = 'Use your phone as a remote, send songs, keep playlists in sync, or let friends add songs. Works over Wi-Fi, a phone hotspot, or the internet.';
     }
@@ -1047,9 +1053,11 @@
     if (masterGain) {
       decks.forEach(function (d) { d.volume = 1; d.muted = false; });
       masterGain.gain.setTargetAtTime(muted ? 0 : vol * f, ac.currentTime, 0.05);
+      if (typeof radioSyncVolume === 'function') radioSyncVolume();
       return;
     }
     decks.forEach(function (d) { if (!fade || d !== fade.from) d.volume = vol * f; d.muted = muted; });
+    if (typeof radioSyncVolume === 'function') radioSyncVolume();
   }
   function setVolume(v) { vol = Math.max(0, Math.min(1, v)); muted = false; applyVolumeToDecks(); updateVolume(); saveSettings(); }
   function setMuted(m) { muted = !!m; applyVolumeToDecks(); updateVolume(); saveSettings(); }
@@ -1138,6 +1146,7 @@
 
   function loadTrack(t, autoplay, startAt) {
     if (!t) return;
+    if (radio.on && autoplay) stopRadio();
     if (t.offline) {
       var root = rootOf(t), path = t.path;
       if (t.offline === 'removed') {
@@ -1225,6 +1234,7 @@
   }
 
   function play() {
+    if (radio.on) stopRadio();
     if (!state.current) {
       if (settings.dj) { startDj(); return; }
       var ids = isListView(state.view) && getList().length ? getList() : defaultIds();
@@ -1241,6 +1251,7 @@
   }
   var pauseTimer = null;
   function pause() {
+    if (radio.on) { radioPause(); return; }
     cancelFade();
     if (deckGains && settings.softPause !== false && !audio.paused) {
       rampDeck(active, 0, 0.2);
@@ -1253,7 +1264,10 @@
     }
     audio.pause();
   }
-  function toggle() { if (audio.paused || !document.body.classList.contains('is-playing')) play(); else pause(); }
+  function toggle() {
+    if (radio.on) { radioToggle(); return; }
+    if (audio.paused || !document.body.classList.contains('is-playing')) play(); else pause();
+  }
   function stop() {
     cancelFade();
     decks.forEach(function (d, i) {
@@ -1312,6 +1326,7 @@
   }
 
   function next(auto) {
+    if (radio.on) { if (!auto) radioStep(1); return; }
     if (!state.queue.length) return;
     if (auto && state.repeat === 'one') { audio.currentTime = 0; play(); return; }
     var i = nextIndex();
@@ -1327,6 +1342,7 @@
   }
 
   function prev() {
+    if (radio.on) { radioStep(-1); return; }
     if (!state.current) return;
     if (audio.currentTime > 3 || (state.qIndex <= 0 && state.repeat !== 'all')) { audio.currentTime = 0; return; }
     var i = state.qIndex - 1;
@@ -1336,8 +1352,9 @@
   }
 
   function setPlayingClass() {
-    document.body.classList.toggle('is-playing', !audio.paused);
-    if ('mediaSession' in navigator) { try { navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing'; } catch (e) { /* ignore */ } }
+    var on = radio.on ? radioPlaying() : !audio.paused;
+    document.body.classList.toggle('is-playing', on);
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.playbackState = on ? 'playing' : 'paused'; } catch (e) { /* ignore */ } }
     startViz();
   }
 
@@ -1571,6 +1588,7 @@
 
   var LOSSLESS = { flac: 1, wav: 1, aif: 1, aiff: 1, caf: 1 };
   function updateNowPlaying() {
+    if (radio.on) { paintRadio(); return; }
     var t = state.current;
     var sub = t ? t.artist + ' — ' + t.album : 'Pick a song to start';
     $('npTitle').textContent = $('stTitle').textContent = t ? t.title : 'Not playing';
@@ -1655,6 +1673,7 @@
     $$('[data-cmd="fav"]').forEach(function (b) { b.classList.toggle('on', on); });
   }
   function toggleFav() {
+    if (radio.on) { likeRadioSong(); return; }
     var t = state.current;
     if (!t) return;
     if (typeof toggleFavFor === 'function') { toggleFavFor(t); return; }
@@ -2330,7 +2349,7 @@
   if ('mediaSession' in navigator) {
     var ms = navigator.mediaSession;
     var handlers = {
-      play: play, pause: pause,
+      play: function () { if (radio.on) radioPlay(); else play(); }, pause: pause,
       previoustrack: prev, nexttrack: function () { next(false); },
       seekbackward: function (d) { audio.currentTime = Math.max(0, audio.currentTime - ((d && d.seekOffset) || 10)); lastPosState = 0; updateTime(); },
       seekforward: function (d) { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + ((d && d.seekOffset) || 10)); lastPosState = 0; updateTime(); },
@@ -4095,7 +4114,7 @@
     var items = [
       ['albums', 'Albums', 'view'], ['artists', 'Artists', 'view'], ['playlists', 'Playlists', 'view'], ['favorites', 'Favourites', 'view'],
       ['queue', 'Up Next', 'view'], ['stats', 'Listening Stats', 'view'], ['eq', 'Equalizer & Vibes', 'cmd'], ['sleep', 'Sleep timer', 'cmd'],
-      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['car', 'Car mode', 'cmd'], ['output', 'Play on… / Cast', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
+      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['radio', 'Radio', 'view'], ['car', 'Car mode', 'cmd'], ['output', 'Play on… / Cast', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
     ].filter(function (it) { return !(IS_IOS && it[0] === 'open-folder'); });
     openModal('<h3>Browse</h3><div class="browse-list">' + items.map(function (it) {
       return '<button ' + (it[2] === 'view' ? 'data-view="' + it[0] + '"' : 'data-cmd="' + it[0] + '"') + ' data-close>' + it[1] + '<span>›</span></button>';
@@ -5265,6 +5284,474 @@
   }
 
 
+  /* =====================================================================
+     Radio: live stations from the free radio-browser.info directory.
+     Shows the song that's playing when the station shares it, and keeps a
+     "Heard on radio" list of songs you liked.
+     ===================================================================== */
+  var RADIO_API = ['https://de1.api.radio-browser.info', 'https://de2.api.radio-browser.info'];
+  var RADIO_GENRES = [
+    ['foryou', 'For you'], ['top', 'Top'], ['afrobeats', 'Afrobeats'], ['hip hop', 'Hip-hop'], ['drill', 'Drill'],
+    ['rnb', 'R&B'], ['amapiano', 'Amapiano'], ['dancehall', 'Dancehall'], ['gospel', 'Gospel'], ['highlife', 'Highlife'],
+    ['pop', 'Pop'], ['lofi', 'Lo-fi'], ['chillout', 'Chill'], ['jazz', 'Jazz'], ['news', 'News']
+  ];
+
+  function radioApi(path) {
+    var i = 0;
+    function tryNext() {
+      if (i >= RADIO_API.length) return Promise.reject(new Error('offline'));
+      var base = RADIO_API[i++], ctl = window.AbortController ? new AbortController() : null;
+      var t = setTimeout(function () { if (ctl) ctl.abort(); }, 8000);
+      return fetch(base + path, ctl ? { signal: ctl.signal } : {}).then(function (r) {
+        clearTimeout(t);
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      }).catch(function () { clearTimeout(t); return tryNext(); });
+    }
+    return tryNext();
+  }
+  var canHls = !!document.createElement('audio').canPlayType('application/vnd.apple.mpegurl');
+  function playableStations(list) {
+    var seen = {};
+    return (list || []).filter(function (s) {
+      var u = s.url_resolved || s.url || '';
+      if (!/^https:/i.test(u) && location.protocol === 'https:') return false; // http streams are blocked on https pages
+      if (s.hls && !canHls) return false;
+      var key = (s.name || '').trim().toLowerCase();
+      if (!key || seen[key]) return false;
+      seen[key] = 1;
+      return true;
+    }).map(function (s) {
+      return {
+        id: s.stationuuid, name: (s.name || '').trim(), url: s.url_resolved || s.url,
+        logo: /^https:/i.test(s.favicon || '') ? s.favicon : '', cc: s.countrycode || '', country: s.country || '',
+        tags: (s.tags || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean).slice(0, 3),
+        codec: s.codec || '', br: s.bitrate || 0
+      };
+    });
+  }
+  function myCountry() {
+    var m = /-([A-Z]{2})$/.exec(navigator.language || '');
+    return m ? m[1] : '';
+  }
+  function loadStations(genre, q) {
+    radio.loading = true;
+    radio.genre = genre;
+    renderRadio();
+    var path;
+    var base = '&order=clickcount&reverse=true&limit=80&hidebroken=true';
+    if (q) path = '/json/stations/search?name=' + encodeURIComponent(q) + base;
+    else if (genre === 'top') path = '/json/stations/topclick/80?hidebroken=true';
+    else if (genre === 'foryou') path = myCountry() ? '/json/stations/search?countrycode=' + myCountry() + base : '/json/stations/topclick/80?hidebroken=true';
+    else path = '/json/stations/search?tag=' + encodeURIComponent(genre) + base;
+    var want = q + '|' + genre;
+    radio.want = want;
+    return radioApi(path).then(function (list) {
+      if (radio.want !== want) return;
+      radio.results = playableStations(list);
+      if (!radio.results.length && genre === 'foryou' && !q) return loadStations('top');
+    }).catch(function () {
+      if (radio.want === want) radio.results = null;
+    }).then(function () {
+      if (radio.want !== want) return;
+      radio.loading = false;
+      renderRadio();
+    });
+  }
+  function savedStations() { return lsGet('tunebox.stations', []); }
+  function isSavedStation(s) { return !!s && savedStations().some(function (x) { return x.id === s.id; }); }
+  function toggleSaveStation(s) {
+    var list = savedStations();
+    if (list.some(function (x) { return x.id === s.id; })) list = list.filter(function (x) { return x.id !== s.id; });
+    else list.unshift(s);
+    lsSet('tunebox.stations', list.slice(0, 100));
+    toast(isSavedStation(s) ? 'Saved “' + s.name + '”' : 'Removed “' + s.name + '”', 1500);
+    renderRadio();
+    paintRadio();
+  }
+
+  /* ---------------- playing a station ---------------- */
+  // Stations that allow it go through the sound engine (EQ, effects, visualizer);
+  // the rest play on their own player, which works with any station.
+  function radioEls() {
+    if (!radio.plain) {
+      radio.plain = new Audio();
+      radio.plain.preload = 'none';
+      radio.fx = new Audio();
+      radio.fx.preload = 'none';
+      radio.fx.crossOrigin = 'anonymous';
+      [radio.plain, radio.fx].forEach(function (el) {
+        el.addEventListener('playing', function () { if (el === radio.el) { radio.stalledAt = 0; setPlayingClass(); paintRadio(); } });
+        el.addEventListener('pause', function () { if (el === radio.el) setPlayingClass(); });
+        el.addEventListener('waiting', function () { if (el === radio.el) { radio.stalledAt = Date.now(); paintRadio(); } });
+        el.addEventListener('error', function () { if (el === radio.el) radioError(el); });
+      });
+    }
+  }
+  function connectFx() {
+    ensureAudioGraph();
+    if (!ac || radio.fxNode) return !!radio.fxNode;
+    try {
+      radio.fxNode = ac.createMediaElementSource(radio.fx);
+      radio.fxNode.connect(preampNode);
+      return true;
+    } catch (e) { return false; }
+  }
+  function playStation(s, list) {
+    if (!s) return;
+    if (list) { radio.list = list; radio.idx = list.indexOf(s); }
+    radioEls();
+    // stop local music
+    if (!audio.paused) { cancelFade(); audio.pause(); }
+    radio.on = true;
+    radio.station = s;
+    radio.song = null;
+    radio.triedPlain = false;
+    document.body.classList.add('radio-on');
+    $$('.radio-live').forEach(function (x) { x.textContent = '● LIVE'; });
+    var useFx = connectFx() && settings.webAudio !== false;
+    startStream(useFx ? radio.fx : radio.plain);
+    fetch(RADIO_API[0] + '/json/url/' + s.id).catch(function () {}); // counts the play for the directory, as its rules ask
+    lsSet('tunebox.lastStation', s);
+    watchNowPlaying(s);
+    paintRadio();
+    renderRadio();
+  }
+  function startStream(el) {
+    [radio.plain, radio.fx].forEach(function (x) { if (x !== el) { x.pause(); x.removeAttribute('src'); try { x.load(); } catch (e) { /* ignore */ } } });
+    radio.el = el;
+    radioSyncVolume();
+    // a fresh link each time, so it starts at "live" rather than an old buffer
+    var u = radio.station.url;
+    el.src = u + (u.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now().toString(36);
+    if (ac && ac.state === 'suspended') ac.resume();
+    var p = el.play();
+    if (p && p.catch) p.catch(function (e) { if (e && e.name === 'NotAllowedError') toast('Tap play to start the radio.'); });
+  }
+  function radioError(el) {
+    if (el === radio.fx && !radio.triedPlain) {
+      radio.triedPlain = true; // this station doesn't allow effects: play it plainly
+      startStream(radio.plain);
+      return;
+    }
+    toast('“' + (radio.station ? radio.station.name : 'This station') + '” isn’t available right now. Try another one.', 3000);
+    radio.el.pause();
+    setPlayingClass();
+    paintRadio();
+  }
+  function radioPlay() {
+    if (!radio.station) return;
+    if (!radio.el || !radio.el.getAttribute('src')) { playStation(radio.station); return; }
+    // after a pause, jump back to live instead of playing an old buffer
+    startStream(radio.el);
+  }
+  function radioPause() { if (radio.el) radio.el.pause(); setPlayingClass(); }
+  function radioToggle() { if (radio.el && !radio.el.paused) radioPause(); else radioPlay(); }
+  function radioStep(d) {
+    var l = radio.list && radio.list.length ? radio.list : savedStations();
+    if (!l.length) return;
+    var i = l.findIndex ? l.findIndex(function (x) { return radio.station && x.id === radio.station.id; }) : -1;
+    var n = l[(i + d + l.length) % l.length];
+    playStation(n, l);
+  }
+  function stopRadio() {
+    if (!radio.on) return;
+    radio.on = false;
+    if (radio.el) { radio.el.pause(); radio.el.removeAttribute('src'); try { radio.el.load(); } catch (e) { /* ignore */ } }
+    stopNowPlaying();
+    document.body.classList.remove('radio-on');
+    $$('.radio-live').forEach(function (x) { x.textContent = ''; });
+    updateNowPlaying();
+    setPlayingClass();
+    renderRadio();
+  }
+  function radioSyncVolume() {
+    if (!radio.plain) return;
+    var f = typeof sleepFactor === 'number' ? sleepFactor : 1;
+    radio.plain.volume = Math.max(0, Math.min(1, vol * f));
+    radio.plain.muted = muted;
+    radio.fx.volume = 1;
+  }
+  function radioPlaying() { return radio.on && radio.el && !radio.el.paused; }
+  // reconnect a station that stalled (weak signal, hotspot hiccup)
+  setInterval(function () {
+    if (radio.on && radio.stalledAt && Date.now() - radio.stalledAt > 12000 && navigator.onLine !== false) {
+      radio.stalledAt = 0;
+      startStream(radio.el);
+    }
+  }, 3000);
+  window.addEventListener('online', function () { if (radio.on && radio.el && radio.stalledAt) startStream(radio.el); });
+
+  /* ---------------- what's playing on the station ---------------- */
+  function cleanStreamTitle(s) {
+    s = (s || '').replace(/\s+/g, ' ').trim();
+    if (!s || s.length < 3) return null;
+    var st = radio.station ? radio.station.name.toLowerCase() : '';
+    if (s.toLowerCase() === st || /^(advert|commercial|jingle|ad break|station id|unknown|live)/i.test(s) || /^\d+$/.test(s)) return null;
+    var i = s.indexOf(' - ');
+    var out = i > 0 ? { artist: s.slice(0, i).trim(), title: s.slice(i + 3).trim() } : { artist: '', title: s };
+    return tidySong(out);
+  }
+  // stations send all sorts of filler ("Online - Live", "2 - …"): keep only real song names
+  var FILLER = /^(live|online|on ?air|now playing|unknown|untitled|n\/?a|-+|radio|stream|music|non ?stop|24\/7|offline)$/i;
+  function tidySong(o) {
+    if (!o) return null;
+    var a = (o.artist || '').trim(), t = (o.title || '').trim();
+    if (/^\d+$/.test(a) || FILLER.test(a)) a = '';
+    if (!t || FILLER.test(t) || (radio.station && t.toLowerCase() === radio.station.name.toLowerCase())) return null;
+    if (!a && t.length < 4) return null;
+    return { artist: a, title: t, art: o.art };
+  }
+  function setSong(song) {
+    var key = song ? song.artist + '|' + song.title : '';
+    var had = radio.song ? radio.song.artist + '|' + radio.song.title : '';
+    if (key === had && (!song || !song.art || (radio.song && radio.song.art === song.art))) return;
+    radio.song = song;
+    paintRadio();
+  }
+  function stopNowPlaying() {
+    var m = radio.meta;
+    radio.meta = null;
+    if (!m) return;
+    if (m.es) m.es.close();
+    if (m.timer) clearInterval(m.timer);
+    if (m.ctl) try { m.ctl.abort(); } catch (e) { /* ignore */ }
+  }
+  function watchNowPlaying(s) {
+    stopNowPlaying();
+    var m = radio.meta = { s: s };
+    var u = s.url, z = /zeno\.fm\/(?:radio\/)?([a-z0-9]+)/i.exec(u), az = /^(https:\/\/[^/]+)\/listen\/([^/]+)\//i.exec(u);
+    if (z && window.EventSource) {
+      // Zeno.fm (used by many African stations) announces each song as it starts
+      m.es = new EventSource('https://api.zeno.fm/mounts/metadata/subscribe/' + z[1]);
+      m.es.onmessage = function (e) {
+        if (radio.meta !== m) return;
+        try { var d = JSON.parse(e.data); if (d.streamTitle !== undefined) setSong(cleanStreamTitle(d.streamTitle)); } catch (err) { /* ignore */ }
+      };
+      return;
+    }
+    if (az) {
+      // AzuraCast stations have a now-playing page with the song and its cover
+      var poll = function () {
+        fetch(az[1] + '/api/nowplaying/' + az[2]).then(function (r) { return r.json(); }).then(function (d) {
+          if (radio.meta !== m) return;
+          var sg = d && d.now_playing && d.now_playing.song;
+          if (!sg) return;
+          var c = sg.title ? tidySong({ artist: sg.artist, title: sg.title }) : cleanStreamTitle(sg.text);
+          if (c && sg.art && /^https:/.test(sg.art) && !/default|generic/i.test(sg.art)) c.art = sg.art;
+          setSong(c);
+        }).catch(function () { if (radio.meta === m) { clearInterval(m.timer); icyWatch(m); } });
+      };
+      poll();
+      m.timer = setInterval(poll, 15000);
+      return;
+    }
+    icyWatch(m);
+  }
+  // Many stations put the song title inside the stream itself ("ICY" metadata). Read just
+  // enough of the stream to get it (about 16 KB), every 20 seconds.
+  function icyWatch(m) {
+    if (!window.fetch || !window.ReadableStream) return;
+    var once = function () {
+      if (radio.meta !== m || !radioPlaying()) return;
+      var ctl = window.AbortController ? new AbortController() : null;
+      m.ctl = ctl;
+      fetch(m.s.url, { headers: { 'Icy-MetaData': '1' }, signal: ctl ? ctl.signal : undefined }).then(function (r) {
+        var mi = parseInt(r.headers.get('icy-metaint'), 10);
+        if (!mi || !r.body) { clearInterval(m.timer); if (ctl) ctl.abort(); return; } // this station doesn't share song names
+        var reader = r.body.getReader(), got = 0, buf = [];
+        function pump() {
+          return reader.read().then(function (x) {
+            if (x.done) return;
+            buf.push(x.value);
+            got += x.value.length;
+            if (got < mi + 1) return pump();
+            var all = new Uint8Array(got), o = 0;
+            buf.forEach(function (b) { all.set(b, o); o += b.length; });
+            var len = all[mi] * 16;
+            if (got < mi + 1 + len) return pump();
+            if (ctl) ctl.abort();
+            var text = new TextDecoder('utf-8').decode(all.subarray(mi + 1, mi + 1 + len));
+            var t = /StreamTitle='(.*?)';/.exec(text);
+            if (t && radio.meta === m) setSong(cleanStreamTitle(t[1]));
+          });
+        }
+        return pump();
+      }).catch(function () { /* the station doesn't allow this: no song names */ clearInterval(m.timer); });
+    };
+    setTimeout(once, 2500);
+    m.timer = setInterval(once, 20000);
+  }
+
+  /* ---------------- showing the station in the player ---------------- */
+  // the station's initials, with its logo on top when it loads
+  function stationLogo(s, big) {
+    return '<div class="ph radio-ph"' + (big ? ' style="font-size:44px"' : '') + '>' + esc(initials(s ? s.name : 'Radio')) + '</div>' +
+      (s && s.logo ? '<img class="st-img" alt="" src="' + esc(s.logo) + '" referrerpolicy="no-referrer" onerror="this.remove()">' : '');
+  }
+  function paintRadio() {
+    if (!radio.on || !radio.station) return;
+    var s = radio.station, g = radio.song;
+    var waiting = radio.el && radio.stalledAt && !radio.el.paused;
+    var title = g ? g.title : s.name;
+    var sub = g ? (g.artist ? g.artist + ' · ' : '') + s.name : (waiting ? 'Connecting…' : 'Live radio' + (s.country ? ' · ' + s.country : ''));
+    $('npTitle').textContent = $('stTitle').textContent = $('npvTitle').textContent = title;
+    $('npSub').textContent = $('stSub').textContent = $('npvSub').textContent = sub;
+    $('stFormat').textContent = 'LIVE' + (s.codec ? ' · ' + s.codec + (s.br ? ' ' + s.br + 'k' : '') : '');
+    document.title = title + ' · ' + s.name;
+    var art = g && g.art ? '<img alt="" src="' + esc(g.art) + '" referrerpolicy="no-referrer">' : stationLogo(s, true);
+    [$('npArt'), $('stArt'), $('npvArt')].forEach(function (el) { el.setAttribute('data-k', 'radio'); if (el.__html !== art) { el.innerHTML = art; el.__html = art; } });
+    $$('[data-cmd="fav"]').forEach(function (b) { b.classList.toggle('on', !!(g && isHeard(g))); });
+    $('npStage').classList.remove('has-lyrics', 'lyrics-synced-on');
+    if ($('npvAsk')) $('npvAsk').hidden = true;
+    $('queueList').innerHTML = '<div class="insp-label">On the radio</div>' + (radio.list || []).slice(0, 12).map(function (x, i) {
+      return '<button class="qrow' + (x.id === s.id ? ' playing' : '') + '" data-radio-i="' + i + '"><span class="q-n">' + (x.id === s.id ? '●' : '') + '</span><div class="tt"><div class="t1">' + esc(x.name) + '</div><div class="t2">' + esc(x.country || '') + '</div></div></button>';
+    }).join('');
+    $('npvNext').textContent = g ? 'On ' + s.name : '';
+    if ('mediaSession' in navigator && window.MediaMetadata) {
+      var artwork = (g && g.art) ? [{ src: g.art, sizes: '512x512' }] : s.logo ? [{ src: s.logo, sizes: '256x256' }] : [{ src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }];
+      try { navigator.mediaSession.metadata = new MediaMetadata({ title: title, artist: g ? (g.artist || s.name) : 'Live radio', album: s.name, artwork: artwork }); } catch (e) { /* ignore */ }
+      try { navigator.mediaSession.setPositionState && navigator.mediaSession.setPositionState(); } catch (e) { /* live: no position */ }
+    }
+    if (state.view === 'radio') renderOnAir();
+  }
+  $('queueList').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-radio-i]');
+    if (!b || !radio.on) return;
+    e.stopPropagation();
+    playStation(radio.list[+b.getAttribute('data-radio-i')]);
+  }, true);
+
+  /* ---------------- Heard on radio ---------------- */
+  function heardList() { return lsGet('tunebox.heard', []); }
+  function isHeard(g) { return heardList().some(function (x) { return x.t === g.title && x.a === g.artist; }); }
+  function likeRadioSong() {
+    var g = radio.song;
+    if (!g) { toast('This station doesn’t share song names — try saving the station instead.', 2600); return; }
+    var l = heardList();
+    if (isHeard(g)) {
+      l = l.filter(function (x) { return !(x.t === g.title && x.a === g.artist); });
+      toast('Removed from Heard on radio', 1400);
+    } else {
+      l.unshift({ t: g.title, a: g.artist, s: radio.station.name, at: Date.now(), art: g.art || '' });
+      toast('Saved to Heard on radio ♥', 1600);
+    }
+    lsSet('tunebox.heard', l.slice(0, 500));
+    paintRadio();
+    if (state.view === 'radio') renderRadio();
+  }
+  function findLinks(q) {
+    var e = encodeURIComponent(q);
+    return '<a class="chip-link" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=' + e + '">YouTube</a>' +
+      '<a class="chip-link" target="_blank" rel="noopener" href="https://open.spotify.com/search/' + e + '">Spotify</a>' +
+      '<a class="chip-link" target="_blank" rel="noopener" href="https://music.apple.com/search?term=' + e + '">Apple Music</a>' +
+      '<a class="chip-link" target="_blank" rel="noopener" href="https://audiomack.com/search?q=' + e + '">Audiomack</a>';
+  }
+  function inLibrary(h) {
+    var tl = h.t.toLowerCase(), al = (h.a || '').toLowerCase().split(/[,&;]| x | ft\.? | feat\.? /)[0].trim();
+    return state.tracks.filter(function (t) { return !t.offline && t.title.toLowerCase() === tl && (!al || t.artist.toLowerCase().indexOf(al) >= 0); })[0];
+  }
+
+  /* ---------------- Radio page ---------------- */
+  function renderOnAir() {
+    var box = $('radioOnAir');
+    if (!box) return;
+    if (!radio.on || !radio.station) { box.innerHTML = ''; box.hidden = true; return; }
+    var s = radio.station, g = radio.song, playing = radioPlaying();
+    box.hidden = false;
+    box.innerHTML = '<div class="onair-art cover">' + (g && g.art ? '<img alt="" src="' + esc(g.art) + '" referrerpolicy="no-referrer">' : stationLogo(s, true)) + '</div>' +
+      '<div class="onair-text"><div class="onair-live"><i></i>LIVE · ' + esc(s.name) + '</div>' +
+        '<div class="onair-title">' + esc(g ? g.title : s.name) + '</div>' +
+        '<div class="onair-sub">' + esc(g ? (g.artist || '') : (s.country || 'Live radio') + (s.tags.length ? ' · ' + s.tags.join(', ') : '')) + '</div>' +
+        '<div class="onair-btns">' +
+          '<button class="icon-btn" data-rad="prev" title="Previous station"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>' +
+          '<button class="play-btn" data-rad="toggle">' + (playing ? ICON_PAUSE : ICON_PLAY) + '</button>' +
+          '<button class="icon-btn" data-rad="next" title="Next station"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6zm10-12v12h2V6z"/></svg></button>' +
+          '<button class="chip-btn' + (g && isHeard(g) ? ' on' : '') + '" data-rad="like"' + (g ? '' : ' disabled title="This station doesn’t share song names"') + '>♥ Like song</button>' +
+          '<button class="chip-btn' + (isSavedStation(s) ? ' on' : '') + '" data-rad="save">' + (isSavedStation(s) ? '★ Saved' : '☆ Save station') + '</button>' +
+          '<button class="chip-btn" data-rad="stop">Stop</button>' +
+        '</div></div>';
+  }
+  function stationCards(list, tag) {
+    return list.map(function (s, i) {
+      var on = radio.on && radio.station && radio.station.id === s.id;
+      return '<button class="st-card' + (on ? ' on' : '') + '" data-st="' + tag + ':' + i + '">' +
+        '<span class="st-logo cover">' + stationLogo(s) + '</span>' +
+        '<span class="st-text"><b>' + esc(s.name) + '</b><small>' + esc([s.country, s.tags.slice(0, 2).join(', ')].filter(Boolean).join(' · ')) + '</small></span>' +
+        (on ? '<span class="st-eq"><i></i><i></i><i></i></span>' : '') + '</button>';
+    }).join('');
+  }
+  function renderRadio() {
+    var v = $('radioView');
+    if (!v || state.view !== 'radio') return;
+    if (!v.querySelector('#radioOnAir')) {
+      v.innerHTML = '<section class="onair glass" id="radioOnAir" hidden></section>' +
+        '<label class="search radio-search"><input id="radioSearch" type="search" placeholder="Search stations — e.g. Joy FM, Capital XTRA, afrobeats" autocomplete="off"></label>' +
+        '<div class="radio-genres" id="radioGenres"></div>' +
+        '<div id="radioSaved"></div>' +
+        '<section class="radio-sec"><div class="radio-sec-head"><h3 id="radioListTitle"></h3></div><div class="st-grid" id="radioList"></div></section>' +
+        '<section class="radio-sec" id="radioHeard"></section>';
+      $('radioSearch').value = radio.q;
+      $('radioSearch').addEventListener('input', debounce(function () {
+        radio.q = $('radioSearch').value.trim();
+        loadStations(radio.genre, radio.q);
+      }, 400));
+    }
+    renderOnAir();
+    $('radioGenres').innerHTML = RADIO_GENRES.map(function (g) {
+      return '<button class="chip-btn' + (!radio.q && radio.genre === g[0] ? ' on' : '') + '" data-genre="' + esc(g[0]) + '">' + g[1] + '</button>';
+    }).join('');
+    var saved = savedStations();
+    $('radioSaved').innerHTML = saved.length ? '<section class="radio-sec"><div class="radio-sec-head"><h3>Your stations</h3></div><div class="st-grid">' + stationCards(saved, 'saved') + '</div></section>' : '';
+    var gname = (RADIO_GENRES.filter(function (g) { return g[0] === radio.genre; })[0] || ['', 'Stations'])[1];
+    $('radioListTitle').textContent = radio.q ? 'Results for “' + radio.q + '”' : gname === 'For you' ? (myCountry() ? 'Popular near you' : 'Popular stations') : gname + ' stations';
+    var list = $('radioList');
+    if (navigator.onLine === false) list.innerHTML = '<p class="insp-empty">Radio needs an internet connection. Your own music still plays offline.</p>';
+    else if (radio.loading) list.innerHTML = '<p class="insp-empty">Finding stations…</p>';
+    else if (radio.results === null) list.innerHTML = '<p class="insp-empty">Couldn’t reach the radio directory. Check your connection and try again.</p>';
+    else if (!radio.results.length) list.innerHTML = '<p class="insp-empty">No stations found.</p>';
+    else list.innerHTML = stationCards(radio.results, 'res');
+    var heard = heardList();
+    $('radioHeard').innerHTML = '<div class="radio-sec-head"><h3>Heard on radio</h3>' + (heard.length ? '<span>' + plural(heard.length, 'song') + '</span>' : '') + '</div>' +
+      (heard.length ? heard.slice(0, 60).map(function (h, i) {
+        var mine = inLibrary(h), q = (h.a ? h.a + ' ' : '') + h.t;
+        return '<div class="heard-row"><div class="tt"><div class="t1">' + esc(h.t) + '</div><div class="t2">' + esc((h.a ? h.a + ' · ' : '') + 'on ' + h.s + ' · ' + new Date(h.at).toLocaleDateString()) + '</div>' +
+          '<div class="heard-links">' + (mine ? '<button class="chip-link mine" data-heard-play="' + mine.id + '">▶ In your library</button>' : '') + findLinks(q) + '</div></div>' +
+          '<button class="icon-btn small" data-heard-rm="' + i + '" title="Remove">✕</button></div>';
+      }).join('') : '<p class="insp-empty">Tap ♥ while a station plays a song you like — it’s saved here so you can find it later.</p>');
+  }
+  $('radioView').addEventListener('click', function (e) {
+    var g = e.target.closest('[data-genre]');
+    if (g) { radio.q = ''; $('radioSearch').value = ''; loadStations(g.getAttribute('data-genre')); return; }
+    var c = e.target.closest('[data-st]');
+    if (c) {
+      var p = c.getAttribute('data-st').split(':'), l = p[0] === 'saved' ? savedStations() : radio.results;
+      playStation(l[+p[1]], l);
+      return;
+    }
+    var r = e.target.closest('[data-rad]');
+    if (r) {
+      var a = r.getAttribute('data-rad');
+      if (a === 'toggle') radioToggle();
+      else if (a === 'prev') radioStep(-1);
+      else if (a === 'next') radioStep(1);
+      else if (a === 'like') likeRadioSong();
+      else if (a === 'save') toggleSaveStation(radio.station);
+      else if (a === 'stop') stopRadio();
+      setTimeout(renderOnAir, 80);
+      return;
+    }
+    var hp = e.target.closest('[data-heard-play]');
+    if (hp) { var t = state.byId.get(+hp.getAttribute('data-heard-play')); if (t) { stopRadio(); playIds([t.id], 0); } return; }
+    var hr = e.target.closest('[data-heard-rm]');
+    if (hr) { var l2 = heardList(); l2.splice(+hr.getAttribute('data-heard-rm'), 1); lsSet('tunebox.heard', l2); renderRadio(); paintRadio(); }
+  });
+  function openRadio() {
+    if (!radio.results.length && !radio.loading) loadStations(radio.genre);
+    else renderRadio();
+  }
+
+
   /* ------------------------------ events ------------------------------ */
 
   var COMMANDS = {
@@ -5625,6 +6112,7 @@
     get fading() { return !!fade; },
     get gain() { return deckGains ? deckGains[active].gain.value : null; },
     debugScan: function (h) { return scanHandle(h); },
+    radio: { play: function (s) { playStation(s, [s]); }, get state() { return radio; } },
     debugPlay: function (id) { var ids = state.tracks.map(function (t) { return t.id; }); playIds(ids, ids.indexOf(id)); },
     debugLyrics: function () { return fetchOnlineLyrics(state.current); },
     connect: { get peers() { return peers; }, handleCode: handleCode, startHosting: startHosting, startParty: startParty, sendTracks: sendTracks, get remote() { return remotePeer; } }

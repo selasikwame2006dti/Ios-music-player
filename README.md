@@ -74,6 +74,17 @@ Tip: bookmark the page so you can open it in one click.
 - **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
 - A Settings page for all of the above
 
+## Radio
+
+- **Radio** (sidebar, or the Radio tab on phones): thousands of free live stations from the community-run radio-browser.info directory.
+  - **Finding stations:** *For you* shows popular stations in your country. There are also genres (Afrobeats, Hip-hop, Drill, R&B, Amapiano, Dancehall, Gospel, Highlife and more), and you can search by name, for example "Joy FM" or "Capital XTRA".
+  - **Playing:** stations play in the normal player, full screen, the mini player and on the lock screen. Next and previous switch stations. Playing one of your own songs stops the radio.
+- **Song names:** shown when the station shares them, sometimes with the song's cover. This works on many Zeno.fm and AzuraCast stations and on stations that put song names in their stream. Not every station shares them.
+- **♥ Like song** saves it to **Heard on radio**, with quick links to find it on YouTube, Spotify, Apple Music or Audiomack. It also shows when the song is already in your library.
+- **☆ Save station** keeps your favourite stations at the top.
+- **The equalizer and effects** work on stations that allow it. Other stations still play normally.
+- **Needs internet.** If the signal drops, the station reconnects by itself.
+
 ## Lyrics, gapless, car mode and more
 
 - **Lyrics that follow the singer:**
@@ -149,6 +160,7 @@ Plain HTML, CSS and JavaScript, with no frameworks and no build step:
 - `css/style.css`: styles, written to work in Safari 14+ and Chrome 90+
 - `js/metadata.js`: a small tag reader for ID3 (MP3), MP4 atoms (M4A) and Vorbis comments (FLAC)
 - `js/app.js`: the library, views, player, folder access, device connections and keyboard shortcuts
+- Radio stations come from [radio-browser.info](https://www.radio-browser.info/), a free, community-run directory.
 - `js/vendor/`: [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT), [jsQR](https://github.com/cozmo/jsQR) (Apache-2.0) for scanning codes, and [PeerJS](https://github.com/peers/peerjs) (MIT) for finding devices over the internet
 
 The scripts are ordinary script files, not modules, so the page works when opened straight from disk (`file://`).
