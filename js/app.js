@@ -697,6 +697,7 @@
   function showStage(on) {
     state.stage = !!on && !!state.current;
     $('npStage').hidden = !state.stage;
+    document.body.classList.toggle('stage-on', state.stage);
     if (!state.stage) restoreLyrics();
     else { lyricIdx = -1; updateLyricHighlight(); lyricLoop(); }
     updateNavActive();
@@ -2038,7 +2039,7 @@
       if (state.current !== t) return;
       state.lyrics = txt ? parseLyrics(txt) : null;
       renderLyrics();
-      if (!state.lyrics) noLocalLyrics(t);
+      if (!state.lyrics || !state.lyrics.synced) noLocalLyrics(t);
     }).catch(function () { if (state.current === t) noLocalLyrics(t); });
   }
 
@@ -2074,7 +2075,7 @@
       v.innerHTML = (big ? '<div class="lyr-pad"></div>' : '') + L.lines.map(function (l, i) {
         return l.text ? lineHtml(l, i, 'lyric-line') : '<div class="lyric-gap"></div>';
       }).join('') + (big ? '<div class="lyr-pad end"></div>' : '') +
-        (L.synced ? '' : '<div class="lyr-note">These lyrics aren’t timed, so they scroll with the song.</div>') +
+        (L.synced ? '' : '<div class="lyr-note">These lyrics aren’t timed, so they scroll with the song. <button class="link-btn" data-lyr="online">Find timed lyrics online</button></div>') +
         (L.online ? '<div class="lyr-note">Lyrics from LRCLIB</div>' : '');
     });
     renderLiveLine(-1);
@@ -2087,12 +2088,7 @@
   function renderLiveLine(idx) {
     var box = $('npvLive'), L = state.lyrics;
     if (!L || !L.lines.length) { box.innerHTML = ''; return; }
-    if (!L.synced) {
-      var first = L.lines.filter(function (l) { return l.text; }).slice(0, 2).map(function (l) { return l.text; });
-      box.innerHTML = '<div class="live-cur plain">' + esc(first.join(' / ')) + '</div><div class="live-next">Tap to read the lyrics</div>';
-      box.setAttribute('data-idx', 'plain');
-      return;
-    }
+    if (!L.synced) { box.innerHTML = ''; box.setAttribute('data-idx', 'plain'); return; }
     var cur = idx >= 0 ? L.lines[idx] : null, nx = L.lines[idx + 1];
     var t = audio.currentTime;
     var resting = !cur || (t > cur.end - 0.05 && nx && nx.t - t > 3);
@@ -2990,6 +2986,7 @@
     m.innerHTML = html;
     $('modalBack').hidden = false;
     modalClose = null;
+    m.onclick = null;
     if (mount) modalClose = mount(m) || null;
     var first = m.querySelector('input[type="text"], input:not([type]), textarea');
     if (first) setTimeout(function () { first.focus(); first.select && first.select(); }, 30);
@@ -3272,13 +3269,13 @@
       (sleep ? '<button class="opt danger" data-sleep="off">Turn off</button>' : '') + '</div>' +
       '<div class="modal-actions"><button class="btn" data-close>Close</button></div>',
       function (m) {
-        m.addEventListener('click', function (e) {
+        m.onclick = function (e) {
           var b = e.target.closest('[data-sleep]');
           if (!b) return;
           var v = b.getAttribute('data-sleep');
           setSleep(v === 'song' || v === 'off' ? v : +v);
           closeModal();
-        });
+        };
       });
   }
 
@@ -4436,7 +4433,7 @@
         '<button class="opt" data-send="pick">Choose files…</button>' +
       '</div><div class="modal-actions"><button class="btn" data-close>Close</button></div>',
       function (m) {
-        m.addEventListener('click', function (e) {
+        m.onclick = function (e) {
           var b = e.target.closest('[data-send]');
           if (!b) return;
           var k = b.getAttribute('data-send'), list = [];
@@ -4447,7 +4444,7 @@
           else if (k === 'pick') { closeModal(); pickAndSend(peer); return; }
           closeModal();
           if (list.length) sendTracks(peer, list.filter(Boolean));
-        });
+        };
       });
   }
 
@@ -4589,46 +4586,127 @@
   async function outputDevices() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
     var list = await navigator.mediaDevices.enumerateDevices();
-    return list.filter(function (d) { return d.kind === 'audiooutput'; });
+    // Windows lists a "communications" device too — it's the same speakers, so skip it
+    return list.filter(function (d) { return d.kind === 'audiooutput' && d.deviceId !== 'communications'; });
+  }
+  // what kind of device is it? (for the icon)
+  var DEV_ICONS = {
+    laptop: 'M4 5h16a1 1 0 0 1 1 1v10H3V6a1 1 0 0 1 1-1m1 2v7h14V7zM1 17h22v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2z',
+    phone: 'M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m0 3v14h8V5zm4 15.2a1 1 0 1 0 0-2 1 1 0 0 0 0 2',
+    headphones: 'M12 3a9 9 0 0 0-9 9v7a2 2 0 0 0 2 2h2v-8H5v-1a7 7 0 0 1 14 0v1h-2v8h2a2 2 0 0 0 2-2v-7a9 9 0 0 0-9-9',
+    speaker: 'M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m5 2.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6m0 5.8a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9m0 2a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5',
+    tv: 'M3 4h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1m1 2v10h16V6z',
+    desktop: 'M3 3h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1m1 2v10h16V5z'
+  };
+  function devKind(label) {
+    var l = (label || '').toLowerCase();
+    if (/airpods|headphone|headset|earbud|buds|earphone|beats|wh-|wf-|bose qc|quietcomfort|sony wh|hands-free|handsfree/.test(l)) return 'headphones';
+    if (/hdmi|displayport|tv|television|monitor|display audio|lg |samsung (q|tu|au)/.test(l)) return 'tv';
+    if (/jbl|speaker|soundlink|sonos|boom|marshall|flip|charge|soundcore|bluetooth|harman|anker|tribit|homepod/.test(l) && !/macbook|built-in|internal|realtek|laptop/.test(l)) return 'speaker';
+    if (/macbook|laptop|notebook/.test(l)) return 'laptop';
+    if (/imac|desktop/.test(l)) return 'desktop';
+    return IS_PHONE ? 'phone' : 'laptop';
+  }
+  function devIcon(kind) { return '<svg viewBox="0 0 24 24"><path fill="currentColor" d="' + (DEV_ICONS[kind] || DEV_ICONS.laptop) + '"/></svg>'; }
+  function thisDeviceName() { return IS_PHONE ? (IS_IOS ? 'This iPhone' : 'This phone') : /Mac/.test(navigator.userAgent) ? 'This Mac' : 'This computer'; }
+  // the pill at the top right of the full-screen player: what's playing the sound right now
+  function updateOutputChip() {
+    var paint = function (label, kind, other) {
+      $$('.out-pill').forEach(function (b) {
+        b.querySelector('.out-ic').innerHTML = devIcon(kind);
+        b.querySelector('.out-label').textContent = label;
+        b.classList.toggle('other', !!other);
+      });
+    };
+    if (settings.sinkId) { paint(settings.sinkLabel || 'Speaker', devKind(settings.sinkLabel), true); return; }
+    paint(thisDeviceName(), IS_PHONE ? 'phone' : 'laptop', false);
+    // when the computer's own default is headphones or a speaker, show that instead
+    if (canSink) outputDevices().then(function (devs) {
+      var d = devs.filter(function (x) { return x.deviceId === 'default' && x.label; })[0];
+      if (!d || settings.sinkId) return;
+      var name = d.label.replace(/^Default\s*-\s*/i, '').replace(/\s*\(.*?\)\s*$/, '');
+      var kind = devKind(name);
+      if (kind === 'headphones' || kind === 'speaker' || kind === 'tv') paint(name, kind, true);
+    }).catch(function () {});
   }
   async function openOutput() {
-    var devs = canSink ? await outputDevices() : [];
+    if (!canSink) { castNow(); return; }
+    var devs = await outputDevices();
     var named = devs.some(function (d) { return d.label; });
     var cur = settings.sinkId || '';
-    var rows = devs.map(function (d) {
+    // the chosen speaker was unplugged: we're back on the default
+    if (cur && named && !devs.some(function (d) { return d.deviceId === cur; })) cur = '';
+    var rows = named ? devs.map(function (d) {
       var id = d.deviceId === 'default' ? '' : d.deviceId;
-      var name = d.label || (d.deviceId === 'default' ? 'System default' : 'Speaker');
-      return '<button class="opt out-opt' + ((id || '') === cur ? ' on' : '') + '" data-sink="' + esc(id) + '" data-label="' + esc(name) + '">' + esc(name.replace(/^Default - /, 'System default · ')) + '</button>';
-    }).join('');
+      var name = d.deviceId === 'default' ? 'Same as my computer (' + d.label.replace(/^Default\s*-\s*/i, '') + ')' : d.label;
+      return '<button class="opt out-opt' + (id === cur ? ' on' : '') + '" data-sink="' + esc(id) + '" data-label="' + esc(d.label.replace(/^Default\s*-\s*/i, '')) + '">' +
+        devIcon(d.deviceId === 'default' ? (IS_PHONE ? 'phone' : devKind(d.label.replace(/^Default\s*-\s*/i, ''))) : devKind(d.label)) + '<span>' + esc(name) + '</span>' + (id === cur ? '<em>Playing</em>' : '') + '</button>';
+    }).join('') : '';
     openModal('<h3>Play on…</h3>' +
-      (canSink ? '<p class="modal-sub">Choose where Tunebox plays, without changing your computer’s sound settings.</p><div class="out-list">' + (rows || '<p class="insp-empty">No speakers found.</p>') + '</div>' +
-        (named ? '' : '<p class="modal-sub small">Your browser hides speaker names until you allow microphone access once. Tunebox never records anything — it only reads the names.</p><button class="btn small" id="outNames">Show speaker names</button>')
-        : '<p class="modal-sub">This browser can’t switch speakers by itself. Use your phone’s or computer’s sound menu (Bluetooth, AirPlay) instead.</p>') +
-      '<div class="set-card-head"><h3>Cast to a TV or speaker</h3></div>' +
-      '<div class="modal-actions wrap" style="justify-content:flex-start;margin-top:4px"><button class="btn" id="outCast">Cast / AirPlay…</button></div>' +
+      (named
+        ? '<p class="modal-sub">Pick where Tunebox plays. Your other apps keep using your normal sound settings.</p><div class="out-list" id="outList">' + rows + '</div>' +
+          '<p class="modal-sub small">Bluetooth speaker or headphones not here? Connect them in your computer’s Bluetooth settings first — they show up here straight away.</p>'
+        : '<p class="modal-sub">To list your speakers and headphones by name, Chrome needs you to allow <b>microphone</b> access once. Tunebox never records or listens — it only reads the names, then turns the microphone off right away.</p>' +
+          '<div class="modal-actions" style="justify-content:flex-start;margin-top:0"><button class="btn primary" id="outNames">Show my speakers</button></div>') +
+      '<div class="set-card-head"><h3>TV, Chromecast or AirPlay</h3></div>' +
+      '<div class="modal-actions" style="justify-content:flex-start;margin-top:4px"><button class="btn" id="outCast">How to cast…</button></div>' +
       '<div class="modal-actions"><button class="btn primary" data-close>Done</button></div>',
       function (m) {
-        m.addEventListener('click', function (e) {
+        var list = m.querySelector('#outList');
+        if (list) list.onclick = function (e) {
           var b = e.target.closest('[data-sink]');
           if (!b) return;
-          var id = b.getAttribute('data-sink');
+          var id = b.getAttribute('data-sink'), label = b.getAttribute('data-label');
           ensureAudioGraph();
           applySink(id).then(function (ok) {
-            if (!ok) { toast('Couldn’t switch to that speaker.'); return; }
+            if (!ok) { toast('Couldn’t switch to “' + label + '”. Is it still connected?', 3000); return; }
             settings.sinkId = id;
-            settings.sinkLabel = b.getAttribute('data-label');
+            settings.sinkLabel = id ? label : '';
             saveSettings();
-            $$('.out-opt').forEach(function (x) { x.classList.toggle('on', x === b); });
-            toast('Playing on ' + settings.sinkLabel, 1600);
+            updateOutputChip();
+            toast(id ? 'Playing on ' + label : 'Playing on this device', 1800);
+            openOutput();
           });
-        });
+        };
         var nb = m.querySelector('#outNames');
-        if (nb) nb.addEventListener('click', function () {
-          navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) { s.getTracks().forEach(function (t) { t.stop(); }); openOutput(); }, function () { toast('No problem — the speakers keep their short names.'); });
-        });
-        m.querySelector('#outCast').addEventListener('click', castNow);
+        if (nb) nb.onclick = function () {
+          navigator.mediaDevices.getUserMedia({ audio: true }).then(function (st) {
+            st.getTracks().forEach(function (t) { t.stop(); });
+            openOutput();
+          }, function (err) {
+            toast(err && err.name === 'NotFoundError'
+              ? 'This computer has no microphone, so Chrome won’t share speaker names. Use your sound settings instead.'
+              : 'Permission wasn’t given. You can allow it later from the lock icon next to the address bar.', 4500);
+          });
+        };
+        m.querySelector('#outCast').onclick = castNow;
       }, 'wide');
   }
+  // if the chosen speaker disappears (Bluetooth turned off), fall back to this device quietly
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', function () {
+      setTimeout(updateOutputChip, 400);
+      if (!settings.sinkId) return;
+      outputDevices().then(function (devs) {
+        if (!devs.some(function (d) { return d.label; })) return;
+        if (devs.some(function (d) { return d.deviceId === settings.sinkId; })) { applySink(settings.sinkId); return; }
+        toast('“' + settings.sinkLabel + '” disconnected — playing on this device.', 3000);
+        applySink('');
+        settings.sinkId = '';
+        saveSettings();
+        updateOutputChip();
+      });
+    });
+  }
+  // reconnect to the chosen speaker on start (without Web Audio, set it on the players)
+  if (canSink && settings.sinkId) {
+    outputDevices().then(function (devs) {
+      if (devs.some(function (d) { return d.deviceId === settings.sinkId; }) && !ac) {
+        decks.forEach(function (d) { if (d.setSinkId) d.setSinkId(settings.sinkId).catch(function () {}); });
+      }
+    });
+  }
+  updateOutputChip();
   function castNow() {
     if (audio.webkitShowPlaybackTargetPicker) { closeModal(); try { audio.webkitShowPlaybackTargetPicker(); return; } catch (e) { /* fall through */ } }
     var help = function () {
@@ -4686,10 +4764,12 @@
   function onlineLyricsFor(t, manual) {
     if (manual) { $$('[data-lyr="online"]').forEach(function (b) { b.textContent = 'Looking…'; b.disabled = true; }); }
     return fetchOnlineLyrics(t).then(function (txt) {
-      if (state.current !== t || (state.lyrics && !state.lyrics.online)) return;
-      if (!txt) { if (manual) { toast('No lyrics found online for this song.', 2200); renderLyrics(); } return; }
-      state.lyrics = parseLyrics(txt);
-      if (state.lyrics) state.lyrics.online = true;
+      if (state.current !== t || (state.lyrics && state.lyrics.synced && !state.lyrics.online)) return;
+      var got = txt ? parseLyrics(txt) : null;
+      // only replace lyrics the song already has with better (timed) ones
+      if (!got || (state.lyrics && !got.synced)) { if (manual) { toast(txt ? 'Only untimed lyrics found online.' : 'No lyrics found online for this song.', 2200); renderLyrics(); } return; }
+      state.lyrics = got;
+      state.lyrics.online = true;
       renderLyrics();
     });
   }

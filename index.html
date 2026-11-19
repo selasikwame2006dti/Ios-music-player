@@ -13,7 +13,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=13">
 </head>
 <body>
 <div class="ambient" aria-hidden="true"></div>
@@ -272,6 +272,14 @@
     <button class="icon-btn npv-close" data-cmd="fullscreen" title="Close (Esc)">
       <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>
     </button>
+    <div class="npv-top">
+      <button class="out-pill" data-cmd="output" title="Choose where to play">
+        <span class="out-ic"></span><span class="out-label">This device</span>
+      </button>
+      <button class="car-round" data-cmd="car" title="Car mode (C)" aria-label="Car mode">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M18.9 6a1.5 1.5 0 0 0-1.4-1h-11a1.5 1.5 0 0 0-1.4 1L3 12v8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h12v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-8zM6.5 16a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m11 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3M5 11l1.5-4.5h11L19 11z"/></svg>
+      </button>
+    </div>
     <div class="npv-inner">
       <div class="npv-art cover" id="npvArt"></div>
       <div class="npv-side">
@@ -303,8 +311,6 @@
           <button class="chip-btn" data-cmd="eq"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 17h6v2H3zm0-12h10v2H3zm10 16v-2h8v-2h-8v-2h-2v6zM7 9v2H3v2h4v2h2V9zm14 4v-2H11v2zm-6-4h2V7h4V5h-4V3h-2z"/></svg>EQ</button>
           <button class="chip-btn" data-cmd="sleep"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12.3 2a10 10 0 1 0 9.7 12.4A8 8 0 0 1 12.3 2"/></svg>Sleep</button>
           <button class="chip-btn" data-cmd="np-more"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4m6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4m6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4"/></svg>More</button>
-          <button class="chip-btn" data-cmd="output"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4M14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6"/></svg>Play on</button>
-          <button class="chip-btn" data-cmd="car"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M18.9 6a1.5 1.5 0 0 0-1.4-1h-11a1.5 1.5 0 0 0-1.4 1L3 12v8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h12v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-8zM6.5 16a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m11 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3M5 11l1.5-4.5h11L19 11z"/></svg>Car</button>
           <button class="chip-btn" data-cmd="np-lyrics"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 5h16v2H4zm0 4h16v2H4zm0 4h10v2H4zm0 4h10v2H4z"/></svg>Lyrics</button>
         </div>
         <div class="npv-next" id="npvNext"></div>
@@ -414,7 +420,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="js/vendor/qrcode.js"></script>
-<script src="js/metadata.js"></script>
-<script src="js/app.js"></script>
+<script src="js/metadata.js?v=13"></script>
+<script src="js/app.js?v=13"></script>
 </body>
 </html>
