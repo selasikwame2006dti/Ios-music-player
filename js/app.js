@@ -636,7 +636,6 @@
   function setView(view, detail) {
     if (view === 'playing') { showStage(true); return; }
     if (view === 'album-current') { goToCurrentAlbum(); return; }
-    if (view === 'queue') { showInspector('queue'); return; }
     if ((view === 'album' || view === 'artist') && state.view !== 'album' && state.view !== 'artist') state.parentView = state.view;
     if (view === 'album' && state.view === 'artist') state.parentView = 'artist:' + state.detail;
     if (view !== 'album' && view !== 'artist') state.parentView = view;
@@ -656,23 +655,18 @@
     var navView = view === 'album' ? 'albums' : view === 'artist' ? 'artists' : view;
     if (view === 'album' && state.parentView.indexOf('artist') === 0) navView = 'artists';
     if (state.stage) navView = 'playing';
-    $$('.nav-item[data-view]').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-view') === navView); });
+    $$('.nav-item[data-view], .tabbar [data-view]').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-view') === navView); });
   }
 
   function showStage(on) {
-    state.stage = !!on;
-    var has = state.tracks.length > 0;
-    var stageOn = state.stage && has;
-    $('npStage').hidden = !stageOn;
-    $('main').hidden = stageOn;
-    $('minibar').hidden = !has;
-    $('shell').classList.toggle('with-minibar', !stageOn && has);
+    state.stage = !!on && !!state.current;
+    $('npStage').hidden = !state.stage;
+    if (!state.stage) restoreLyrics();
     updateNavActive();
-    closeDrawers();
     applyViewTint();
-    if (stageOn) startViz();
-    else renderRows();
+    if (!state.stage) renderRows();
   }
+
   function goBack() {
     var p = state.parentView || 'songs';
     if (p.indexOf('artist:') === 0) setView('artist', p.slice(7));
@@ -682,10 +676,7 @@
   function renderAll(soft) {
     var has = state.tracks.length > 0;
     var isSet = state.view === 'settings';
-    $('npStage').hidden = !(state.stage && has);
-    $('main').hidden = state.stage && has;
-    $('minibar').hidden = !has;
-    $('shell').classList.toggle('with-minibar', !(state.stage && has) && has);
+    $('npStage').hidden = !state.stage;
     $('noFolders').hidden = state.folders.length > 0 || has;
     $('settingsView').hidden = !isSet;
     $('empty').hidden = has || isSet;
@@ -718,6 +709,7 @@
     return '<div class="hero-actions">' +
       '<button class="play-btn" data-cmd="play-view" title="Play">' + ICON_PLAY + '</button>' +
       '<button class="btn ghost" data-cmd="shuffle-view">' + ICON_SHUFFLE + 'Shuffle</button>' +
+      '<button class="btn ghost dj-hero" data-cmd="dj-start"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/></svg>DJ</button>' +
     '</div>';
   }
 
@@ -1380,13 +1372,15 @@
     var t = state.current;
     var sub = t ? t.artist + ' — ' + t.album : 'Pick a song to start';
     $('npTitle').textContent = $('stTitle').textContent = t ? t.title : 'Not playing';
+    $('npvTitle').textContent = t ? t.title : '';
+    $('npvSub').textContent = t ? t.artist + ' — ' + t.album : '';
     $('npSub').textContent = $('stSub').textContent = sub;
     $('stFormat').textContent = t ? t.ext.toUpperCase() + (LOSSLESS[t.ext] ? ' · LOSSLESS' : '') : '';
     document.title = t ? t.title + ' · ' + t.artist : 'Tunebox';
     updateFavButtons();
     updateUpNext();
 
-    var arts = [$('npArt'), $('stArt')];
+    var arts = [$('npArt'), $('stArt'), $('npvArt')];
     arts.forEach(function (el) { el.setAttribute('data-k', t ? t.albumKey : ''); });
     if (!t) { arts.forEach(function (el) { el.innerHTML = ''; }); updateTime(); return; }
     arts.forEach(function (el) { paintCover(el, t, t.album); });
@@ -1403,6 +1397,8 @@
   }
 
   function updateUpNext() {
+    var nx = state.qIndex + 1 < state.queue.length ? state.byId.get(state.queue[state.qIndex + 1]) : null;
+    $('npvNext').innerHTML = nx ? 'Up next: <b>' + esc(nx.title) + '</b> · ' + esc(nx.artist) : '';
     var list = $('queueList');
     if (!state.queue.length || state.qIndex < 0) {
       list.innerHTML = '<div class="insp-empty">' + (state.tracks.length ? 'Play a song to fill your queue.' : 'Add some music to get started.') + '</div>';
@@ -1774,11 +1770,11 @@
     var v = $('lyricsView'), L = state.lyrics;
     if (!state.current) { v.innerHTML = '<div class="insp-empty">Play a song to see its lyrics.</div>'; return; }
     if (!L || !L.lines.length) {
-      v.className = 'insp-body thin-scroll';
+      v.className = 'lyrics-box';
       v.innerHTML = '<div class="insp-empty">No lyrics found for this song.<br><br>Tip: put a <code>.lrc</code> file with the same name next to the song for synced lyrics, or add lyrics to the file’s tags.</div>';
       return;
     }
-    v.className = 'insp-body thin-scroll ' + (L.synced ? 'lyrics-synced' : 'lyrics-plain');
+    v.className = 'lyrics-box ' + (L.synced ? 'lyrics-synced' : 'lyrics-plain');
     v.innerHTML = L.lines.map(function (l, i) {
       return l.text ? '<div class="lyric-line" data-li="' + i + '">' + esc(l.text) + '</div>' : '<div class="lyric-gap"></div>';
     }).join('');
@@ -1806,59 +1802,32 @@
   }
 
   /* ---------------- window presets, drawers, inspector ---------------- */
-  var shell = $('shell'), stageWrap = $('stageWrap');
-  function applyPreset(p) {
-    settings.preset = p;
-    saveSettings();
-    stageWrap.classList.toggle('framed', p !== 'full');
-    var availW = window.innerWidth;
-    if (p === 'split') {
-      shell.style.width = Math.min(720, availW - 36) + 'px';
-      shell.style.height = 'min(760px, calc(100vh - 36px))';
-    } else if (p === 'mini') {
-      shell.style.width = Math.min(368, availW - 36) + 'px';
-      shell.style.height = 'min(660px, calc(100vh - 36px))';
-    } else {
-      shell.style.width = '';
-      shell.style.height = '';
-    }
-    $$('.presets [data-preset]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-preset') === p); });
-    closeDrawers();
-    setTimeout(updateWidthClasses, 380);
-  }
+  var shell = $('shell');
   function updateWidthClasses() {
-    var w = shell.getBoundingClientRect().width;
-    shell.classList.toggle('w-split', w < 860);
-    shell.classList.toggle('w-compact', w < 600);
-    shell.classList.toggle('w-mini', w < 420);
-    var mode = w < 420 ? 'Mini' : w < 600 ? 'Compact' : w < 860 ? 'Split' : 'Studio';
-    $('sizeBadge').textContent = Math.round(w) + 'px · ' + mode;
-    if (w >= 860) $('inspector').classList.remove('drawer-open');
-    if (w >= 600) $('sidebar').classList.remove('drawer-open');
-    if (!$('inspector').classList.contains('drawer-open') && !$('sidebar').classList.contains('drawer-open')) $('drawerBackdrop').classList.remove('open');
+    var w = window.innerWidth;
+    shell.classList.toggle('w-split', w < 1100);
+    shell.classList.toggle('w-compact', w <= 720);
     renderRows();
   }
-  function closeDrawers() {
-    $('sidebar').classList.remove('drawer-open');
-    $('inspector').classList.remove('drawer-open');
-    $('drawerBackdrop').classList.remove('open');
+  function closeDrawers() { /* no drawers in this layout */ }
+  function toggleInspector() { setInspTab(state.inspTab === 'queue' ? 'lyrics' : 'queue'); }
+  function applyInspectorSetting() { /* the Now Playing panel is always shown on wide windows */ }
+  function restoreLyrics() {
+    var lv = $('lyricsView'), home = document.querySelector('.upnext');
+    if (lv.parentNode !== home) home.appendChild(lv);
+    $('npvLyrics').hidden = true;
+    $$('[data-cmd="np-lyrics"]').forEach(function (b) { b.classList.remove('on'); });
+    setInspTab(state.inspTab);
   }
-  function openDrawer(el) {
-    var willOpen = !el.classList.contains('drawer-open');
-    closeDrawers();
-    if (willOpen) { el.classList.add('drawer-open'); $('drawerBackdrop').classList.add('open'); }
-  }
-  function toggleInspector() {
-    if (shell.classList.contains('w-split')) { openDrawer($('inspector')); return; }
-    settings.inspector = settings.inspector === false;
-    saveSettings();
-    applyInspectorSetting();
-  }
-  function applyInspectorSetting() {
-    var show = settings.inspector !== false;
-    $('workspace').classList.toggle('inspector-hidden', !show);
-    $('btnInspector').classList.toggle('on', show);
-    setTimeout(renderRows, 50);
+  function toggleNpLyrics() {
+    var box = $('npvLyrics'), lv = $('lyricsView');
+    if (!box.hidden) { restoreLyrics(); return; }
+    box.appendChild(lv);
+    lv.hidden = false;
+    box.hidden = false;
+    $$('[data-cmd="np-lyrics"]').forEach(function (b) { b.classList.add('on'); });
+    lyricIdx = -1;
+    updateLyricHighlight();
   }
   function setInspTab(tab) {
     state.inspTab = tab;
@@ -1868,11 +1837,7 @@
     $('lyricsView').hidden = tab !== 'lyrics';
     if (tab === 'lyrics') { lyricIdx = -1; updateLyricHighlight(); }
   }
-  function showInspector(tab) {
-    setInspTab(tab);
-    if (shell.classList.contains('w-split')) { if (!$('inspector').classList.contains('drawer-open')) openDrawer($('inspector')); }
-    else if (settings.inspector === false) { settings.inspector = true; saveSettings(); applyInspectorSetting(); }
-  }
+  function showInspector(tab) { setInspTab(tab); }
 
   // Remember the last song + position so the next visit can resume.
   function saveLast() {
@@ -2179,8 +2144,7 @@
         sRow('Accent colour', accent === 'art' ? 'Colours come from the album art.' : 'Fixed colour.', swatches) +
         sRow('Background glow', '', sSlider('glow', 0, 1.6, 0.05, typeof settings.glow === 'number' ? settings.glow : 1, SLIDE_LABELS.glow(typeof settings.glow === 'number' ? settings.glow : 1))) +
         sRow('Visualizer', 'The moving bars under the cover.', sSwitch('viz')) +
-        sRow('Reduce motion', 'Fewer animations — easier on older Macs.', sSwitch('reduceMotion')) +
-        sRow('Window size', 'Same as the coloured buttons top-left.', sSeg('preset', [['full', 'Full'], ['split', 'Split'], ['mini', 'Mini']], settings.preset || 'full'))) +
+        sRow('Reduce motion', 'Fewer animations — easier on older Macs.', sSwitch('reduceMotion'))) +
 
       sCard('Playback', 'Fades, speed and effects.',
         sRow('Crossfade', 'Blend the end of a song into the next.' + (canCrossfade() ? '' : ' (Not available on this device.)'),
@@ -2228,7 +2192,6 @@
         if (val === 'auto') delete settings.theme; else settings.theme = val;
         applyTheme();
         break;
-      case 'preset': applyPreset(val); break;
       case 'dj': if (val) startDj(); else stopDj(); return;
       case 'speed': case 'preservePitch': case 'reverb': case 'preamp': applyFx(); break;
       case 'accent': case 'glow': case 'viz': case 'reduceMotion': applyLook(); break;
@@ -2407,10 +2370,11 @@
     'play-view': function () { playIds(getList(), 0); },
     'shuffle-view': function () { var ids = getList(); playIds(ids, Math.floor(Math.random() * ids.length), true); },
     fav: toggleFav,
-    fullscreen: function () { if (state.stage) goBack(); else openNowPlaying(); },
+    fullscreen: function () { showStage(!state.stage); },
+    'np-lyrics': function () { toggleNpLyrics(); },
     eq: function () { toggleEqPanel(); },
     dj: function () { toggleDj(); },
-    'dj-start': function () { toggleDj(); if (settings.dj) showStage(true); }
+    'dj-start': function () { toggleDj(); if (settings.dj && window.innerWidth < 1100) showStage(true); }
   };
   document.addEventListener('click', function (e) {
     var b = e.target.closest('[data-cmd]');
@@ -2484,15 +2448,7 @@
   });
   $('tabQueue').addEventListener('click', function () { setInspTab('queue'); });
   $('tabLyrics').addEventListener('click', function () { setInspTab('lyrics'); });
-  $('btnInspector').addEventListener('click', toggleInspector);
-  $('closeInspector').addEventListener('click', closeDrawers);
-  $('btnLib').addEventListener('click', function () { openDrawer($('sidebar')); });
-  $('drawerBackdrop').addEventListener('click', closeDrawers);
-  $$('[data-preset]').forEach(function (b) {
-    b.addEventListener('click', function () { applyPreset(b.getAttribute('data-preset')); });
-  });
-  if (window.ResizeObserver) new ResizeObserver(updateWidthClasses).observe(shell);
-  window.addEventListener('resize', function () { if (settings.preset && settings.preset !== 'full') applyPreset(settings.preset); else updateWidthClasses(); });
+  window.addEventListener('resize', throttle(updateWidthClasses, 150));
   $('btnTheme').addEventListener('click', toggleTheme);
 
   var searchTimer;
@@ -2629,7 +2585,7 @@
     else if (k === 'l' || k === 'L') toggleFav();
     else if (k === 'e' || k === 'E') toggleEqPanel();
     else if (k === 't' || k === 'T') toggleTheme();
-    else if (k === 'Escape') { closeDrawers(); toggleEqPanel(false); }
+    else if (k === 'Escape') { if (!$('eqPanel').hidden) toggleEqPanel(false); else if (state.stage) showStage(false); }
     else if (k === 'Enter' && state.selectedId) {
       var i = getList().indexOf(state.selectedId);
       if (i >= 0) playFromRow(i);
@@ -2661,8 +2617,6 @@
   }
 
   updateVolume();
-  applyPreset(settings.preset || 'full');
-  applyInspectorSetting();
   updateWidthClasses();
   applyLook();
   updateDjUi();

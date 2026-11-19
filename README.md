@@ -32,7 +32,7 @@ Tip: bookmark the page so you can open it in one click.
 
 **Playing**
 - Now Playing stage with a big cover, live visualizer, and synced or plain lyrics
-- **Tunebox DJ** (press **D**): an endless, smart mix with no AI service and no internet needed. It picks each next song by genre, artist, era, tempo, energy and your favourites, learns from what you play through and what you skip, and never repeats the same artist twice in a row.
+- **Tunebox DJ** (press **D**, or use the DJ button in the sidebar, the Now Playing panel or the phone tab bar): an endless, smart mix with no AI service and no internet needed. It picks each next song by genre, artist, era, tempo, energy and your favourites, learns from what you play through and what you skip, and never repeats the same artist twice in a row.
 - **Crossfade** (0–12 s), smooth skips and soft pause
 - **10-band equalizer** (±15 dB) with 12 presets and a volume boost. A built-in limiter keeps big boosts from crackling.
 - **Vibes:** Slowed + Reverb, Chill, Sped Up, Nightcore and Concert Hall, plus free speed and reverb controls
@@ -45,8 +45,8 @@ Tip: bookmark the page so you can open it in one click.
 - Opens your music folder automatically (Chrome)
 
 **App**
-- Aether-style glass design with light, dark or auto theme, and accent colours from the album art or a colour you pick
-- Mini, Split and Full window sizes, plus a phone layout
+- Glass design with light, dark or auto theme, and accent colours from the album art or a colour you pick
+- Layouts for wide and narrow windows, plus a phone layout with a tab bar
 - **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
 - A Settings page for all of the above
 
@@ -64,12 +64,12 @@ Tip: bookmark the page so you can open it in one click.
 | M | Mute |
 | F | Now Playing |
 | D | Tunebox DJ on / off |
-| I | Show / hide Up Next & Lyrics |
+| I | Switch Up Next / Lyrics |
 | , | Settings |
 | L | Favourite the current song |
 | E | Equalizer |
 | T | Light / dark theme |
-| Esc | Close panels |
+| Esc | Close the equalizer or full-screen view |
 | Enter | Play selected song |
 
 ## File formats
