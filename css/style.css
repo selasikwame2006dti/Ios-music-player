@@ -1755,3 +1755,7 @@ body.stage-on .toast { bottom: auto; top: calc(18px + env(safe-area-inset-top));
   .car-round { width: 36px; height: 36px; }
 }
 @media (max-width: 720px) { body.stage-on .toast { top: calc(58px + env(safe-area-inset-top)); } }
+.npv-ask { margin-top: 16px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--glass); font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.npv-ask > div { display: flex; margin-top: 10px; }
+.npv-ask .btn + .btn { margin-left: 8px; }
+.lyrics-mode .npv-ask { display: none; }

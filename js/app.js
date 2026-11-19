@@ -104,8 +104,10 @@
     var w = s.replace(/^the\s+/i, '').split(/\s+/).filter(Boolean);
     return ((w[0] || '?').charAt(0) + (w[1] ? w[1].charAt(0) : '')).toUpperCase();
   }
+  // one shared collator: building one per comparison made sorting big libraries ~20× slower
+  var collator = window.Intl && Intl.Collator ? new Intl.Collator(undefined, { sensitivity: 'base', numeric: true }) : null;
   function cmpStr(a, b) {
-    return a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+    return collator ? collator.compare(a, b) : a.localeCompare(b);
   }
   function sortName(s) { return s.replace(/^the\s+/i, ''); }
   function shuffleArr(a) {
@@ -137,6 +139,18 @@
     toastTimer = setTimeout(function () { el.classList.remove('show'); }, ms || 3200);
   }
   function setStatus(msg) { $('scanStatus').textContent = msg || ''; }
+  // Background work (reading tags, saving songs) gives way to the music and the screen:
+  // on phones it runs slower while a song plays, and pauses while the app is in the background.
+  function sleepMs(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function breathe() {
+    var playing = typeof audio !== 'undefined' && audio && !audio.paused;
+    var ms = IS_PHONE ? (playing ? 60 : 12) : (playing ? 8 : 0);
+    if (document.hidden) ms = Math.max(ms, IS_PHONE ? 400 : 50);
+    if (window.requestIdleCallback && !document.hidden) {
+      return new Promise(function (r) { setTimeout(function () { requestIdleCallback(function () { r(); }, { timeout: 300 }); }, ms); });
+    }
+    return sleepMs(ms);
+  }
 
   /* ------------------------------ library ------------------------------ */
 
@@ -279,12 +293,12 @@
   /* --------------------------- tags & durations --------------------------- */
 
   var tagQueue = [], tagRunning = 0, tagDone = 0, tagTotal = 0;
-  var refreshSoon = throttle(function () { invalidate(); renderAll(true); }, 1500);
+  var refreshSoon = throttle(function () { invalidate(); renderAll(true); }, IS_PHONE ? 4000 : 1500); // redrawing the whole library is heavy on phones
 
   function scanTags(tracks) {
     tagQueue = tagQueue.concat(tracks);
     tagTotal += tracks.length;
-    for (var i = tagRunning; i < 3; i++) tagWorker();
+    for (var i = tagRunning; i < (IS_PHONE ? 1 : 3); i++) tagWorker();
   }
 
   async function tagWorker() {
@@ -292,7 +306,9 @@
     while (tagQueue.length) {
       var t = tagQueue.shift();
       if (t.offline) { tagDone++; continue; }
+      await breathe();
       var m = await Meta.read(t.file, t.ext, false);
+      if (m.duration && !t.duration) t.duration = m.duration;
       if (m.title) t.title = m.title;
       if (m.artist) t.artist = m.artist;
       if (m.album) t.album = m.album;
@@ -337,8 +353,10 @@
   async function durWorker() {
     durRunning = true;
     while (durQueue.length) {
+      if (IS_PHONE && !audio.paused) { await sleepMs(4000); continue; }
       var t = durQueue.shift();
       if (t.duration || t.offline) continue;
+      await breathe();
       t.duration = await probeDuration(t.file);
       if (t.duration) markMetaDirty(t);
       rowsSoon();
@@ -385,7 +403,7 @@
           if (nx) nx();
         }
       }
-      if (coverActive < 2) run(); else coverWaiting.push(run);
+      if (coverActive < (IS_PHONE ? 1 : 2)) run(); else coverWaiting.push(run);
     });
   }
 
@@ -1733,12 +1751,13 @@
   }
   // When headphones/Bluetooth connect or disconnect, phones move the sound to another output.
   // Restarting the audio engine there stops it from stuttering on the new output.
-  var outputChanged = false, outputWatched = false;
+  var outputChanged = false, outputWatched = false, lastDeviceChange = 0;
   function watchOutput() {
     if (outputWatched || !navigator.mediaDevices || !navigator.mediaDevices.addEventListener) return;
     outputWatched = true;
     navigator.mediaDevices.addEventListener('devicechange', function () {
       outputChanged = true;
+      lastDeviceChange = Date.now();
       setTimeout(function () { if (!audio.paused) restartOutput(); }, 600);
     });
   }
@@ -1752,7 +1771,8 @@
   // a stutter check: if the audio clock falls behind real time, the output is struggling
   var clockCheck = { at: 0, t: 0, bad: 0, fixes: [] };
   setInterval(function () {
-    if (!ac || audio.paused || ac.state !== 'running') { clockCheck.at = 0; return; }
+    // only right after headphones/Bluetooth change: under heavy load a restart would only add glitches
+    if (!ac || audio.paused || ac.state !== 'running' || Date.now() - lastDeviceChange > 90000) { clockCheck.at = 0; return; }
     var now = performance.now() / 1000, t = ac.currentTime;
     if (clockCheck.at) {
       var real = now - clockCheck.at, got = t - clockCheck.t;
@@ -2043,7 +2063,7 @@
     }).catch(function () { if (state.current === t) noLocalLyrics(t); });
   }
 
-  var lyricIdx = -1;
+  var lyricIdx = -1, askedLyricsThisVisit = false;
   function wordsOn() { return settings.lyricWords !== false; }
   function lineHtml(l, i, cls) {
     var inner;
@@ -2061,6 +2081,8 @@
     $('npStage').classList.toggle('has-lyrics', has);
     $('npStage').classList.toggle('lyrics-synced-on', has && L.synced);
     $('lyrExpand').hidden = !has || state.inspTab !== 'lyrics';
+    // ask once whether to look up timed lyrics online (sends only song names to LRCLIB)
+    $('npvAsk').hidden = !(state.current && settings.lyricsOnline === undefined && !askedLyricsThisVisit && navigator.onLine !== false && !(has && L.synced));
     lyricBoxes().forEach(function (v, n) {
       var big = n === 1;
       if (!state.current) { v.innerHTML = '<div class="insp-empty">Play a song to see its lyrics.</div>'; return; }
@@ -2115,6 +2137,8 @@
     if (live.getAttribute('data-idx') !== idx + (resting ? 'r' : '')) renderLiveLine(idx);
     if (idx !== lyricIdx) {
       boxes.forEach(function (v) {
+        if (!boxShown(v)) { v.__stale = true; return; }
+        v.__stale = false;
         Array.prototype.slice.call(v.querySelectorAll('.lyric-line.active')).forEach(function (el) { el.classList.remove('active', 'near'); });
         Array.prototype.slice.call(v.querySelectorAll('.lyric-line.past')).forEach(function (el) { if (+el.getAttribute('data-li') >= idx) el.classList.remove('past'); });
         if (idx >= 0) {
@@ -2129,7 +2153,7 @@
       lyricIdx = idx;
       lastWordKey = '';
     }
-    paintWords(boxes.concat([live]), cur, t);
+    paintWords(boxes.concat([live]).filter(boxShown), cur, t);
   }
   function paintWords(boxes, cur, t) {
     if (!cur || !cur.words || !wordsOn()) return;
@@ -2144,7 +2168,7 @@
     boxes.forEach(function (v) {
       var line = v.id === 'npvLive' ? v.querySelector('.live-cur') : v.querySelector('.lyric-line.active');
       if (!line) return;
-      var spans = line.querySelectorAll('.lw');
+      var spans = line.__spans || (line.__spans = line.querySelectorAll('.lw'));
       if (changed || line.__wi === undefined) {
         for (var j = 0; j < spans.length; j++) {
           spans[j].classList.toggle('sung', j < wi || (j === wi && prog >= 1));
@@ -2177,14 +2201,17 @@
     if (!state.lyrics || !state.lyrics.synced) return false;
     return (state.stage && (state.lyricsMode || $('npStage').classList.contains('has-lyrics'))) || (!$('lyricsView').hidden && !!$('lyricsView').offsetParent);
   }
+  // ~30 updates a second is plenty for smooth word fill, and half the work of every frame
+  var lyricLast = 0;
   function lyricLoop() {
     if (lyricRaf || audio.paused || !lyricsVisible() || !wordsOn()) return;
-    lyricRaf = requestAnimationFrame(function step() {
-      updateLyricHighlight();
+    lyricRaf = requestAnimationFrame(function step(now) {
+      if (now - lyricLast >= (IS_PHONE ? 40 : 30)) { lyricLast = now; updateLyricHighlight(); }
       if (!audio.paused && lyricsVisible() && !document.hidden) lyricRaf = requestAnimationFrame(step);
       else lyricRaf = 0;
     });
   }
+  function boxShown(v) { return !v.hidden && !!v.offsetParent; }
   decks.forEach(function (d) { d.addEventListener('play', function () { if (this === audio) lyricLoop(); }); });
   ['wheel', 'touchmove'].forEach(function (ev) {
     lyricBoxes().forEach(function (v) { v.addEventListener(ev, function () { userScrolledAt = Date.now(); }, { passive: true }); });
@@ -3580,16 +3607,68 @@
       r.onerror = function () { rej(r.error); };
     });
   }
-  function storeFiles(entries) {
+  // Songs are copied into Tunebox's storage one by one in the background (never all at once —
+  // a huge single copy can use so much memory that a phone closes other apps).
+  var storeQueue = [], storing = false, storeDone = 0, storeTotal = 0;
+  var KEEP_RE = /\.(mp3|m4a|m4b|aac|flac|wav|aiff?|ogg|oga|opus|webm|lrc|jpe?g|png)$/i;
+  function storeFiles(entries, opts) {
     if (!keepFilesOn() || !entries.length) return;
+    var list = entries.filter(function (e) { return KEEP_RE.test(e.file.name); });
+    if (!list.length) return;
+    // asking every file for its size is slow on phones, so estimate from a sample
+    var sample = list.length > 60 ? list.filter(function (e, i) { return i % Math.ceil(list.length / 40) === 0; }) : list;
+    var bytes = sample.reduce(function (n, e) { return n + (e.file.size || 0); }, 0) * (list.length / sample.length);
+    if (bytes > 400 * 1048576 && !(opts && opts.confirmed)) { askToStore(list, bytes); return; }
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {});
-    fdbOpen().then(function (db) {
-      var tx = db.transaction('files', 'readwrite'), st = tx.objectStore('files');
-      entries.forEach(function (e) {
-        if (!/\.(mp3|m4a|m4b|aac|flac|wav|aiff?|ogg|oga|opus|webm|lrc|jpe?g|png)$/i.test(e.file.name)) return;
-        st.put({ blob: e.file, name: e.file.name, type: e.file.type, lm: e.file.lastModified }, e.path);
-      });
-    }).catch(function () { toast('Couldn’t save the songs on this device (storage full?)'); });
+    storeQueue = storeQueue.concat(list);
+    storeTotal += list.length;
+    pumpStore();
+  }
+  function fmtBytes(n) { return n > 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : Math.round(n / 1048576) + ' MB'; }
+  function askToStore(list, bytes) {
+    var go = function () { storeFiles(list, { confirmed: true }); };
+    var est = navigator.storage && navigator.storage.estimate ? navigator.storage.estimate() : Promise.resolve(null);
+    est.then(function (e) {
+      var free = e ? (e.quota || 0) - (e.usage || 0) : Infinity;
+      var fits = bytes < free * 0.85;
+      openModal('<h3>Keep these songs on this phone?</h3><p class="modal-sub">' + plural(list.length, 'song') + ' (' + fmtBytes(bytes) + '). ' +
+        'Keeping copies means they’re still here after you close Tunebox, even if the SD card or USB drive is removed. Copying happens slowly in the background so your phone stays smooth.' +
+        (fits ? '' : '<br><br><b>There isn’t enough free space for all of them.</b> Tunebox will copy what fits.') + '</p>' +
+        '<div class="modal-actions wrap"><button class="btn" data-close id="storeNo">Don’t copy — I’ll pick the folder again</button><button class="btn primary" id="storeYes">Keep copies</button></div>',
+        function (m) { m.querySelector('#storeYes').onclick = function () { closeModal(); go(); }; });
+    });
+  }
+  async function pumpStore() {
+    if (storing) return;
+    storing = true;
+    var db;
+    try { db = await fdbOpen(); } catch (e) { storing = false; return; }
+    var full = false;
+    while (storeQueue.length && !full) {
+      var e = storeQueue.shift();
+      await breathe();
+      if (IS_PHONE && !audio.paused) await sleepMs(120);
+      try {
+        await new Promise(function (res, rej) {
+          var tx = db.transaction('files', 'readwrite');
+          tx.objectStore('files').put({ blob: e.file, name: e.file.name, type: e.file.type, lm: e.file.lastModified }, e.path);
+          tx.oncomplete = res;
+          tx.onerror = function () { rej(tx.error); };
+          tx.onabort = function () { rej(tx.error); };
+        });
+      } catch (err) {
+        if (err && (err.name === 'QuotaExceededError' || /quota/i.test(err.message || ''))) {
+          full = true;
+          toast('Phone storage is full — ' + plural(storeQueue.length + 1, 'song') + ' weren’t copied.', 4500);
+        }
+      }
+      storeDone++;
+      if (storeDone % 10 === 0 || !storeQueue.length) setStatus(storeQueue.length ? 'Saving songs on this device… ' + storeDone + ' / ' + storeTotal : '');
+    }
+    storeQueue = [];
+    storeDone = storeTotal = 0;
+    storing = false;
+    if (!full) setStatus(plural(state.tracks.length, 'song'));
   }
   function loadStoredFiles() {
     return fdbOpen().then(function (db) {
@@ -4781,12 +4860,13 @@
       if (lyricsOnlineAuto()) onlineLyricsFor(t);
     });
   }
+  $('npvAskNo').addEventListener('click', function () { askedLyricsThisVisit = true; $('npvAsk').hidden = true; });
   document.addEventListener('click', function (e) {
     var b = e.target.closest('[data-lyr]');
     if (!b || !state.current) return;
     var act = b.getAttribute('data-lyr');
     if (act === 'online') onlineLyricsFor(state.current, true);
-    else if (act === 'always') { settings.lyricsOnline = true; saveSettings(); onlineLyricsFor(state.current, true); }
+    else if (act === 'always') { settings.lyricsOnline = true; saveSettings(); $('npvAsk').hidden = true; onlineLyricsFor(state.current, true); }
   });
 
   /* ---------------- car mode ---------------- */
