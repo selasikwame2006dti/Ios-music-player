@@ -1,13 +1,13 @@
 /* Tunebox offline support: keeps a copy of the app so it opens with no internet.
    Your music is never cached here — it is always read straight from your own files. */
-var CACHE = 'tunebox-v7';
+var CACHE = 'tunebox-v9';
 var ASSETS = [
   './',
   'index.html',
   'css/style.css',
   'js/app.js',
   'js/metadata.js',
-  'js/vendor/qrcode.js',
+  'js/vendor/qrcode.js', 'js/vendor/jsqr.js', 'js/vendor/peerjs.js',
   'icon.svg',
   'icons/icon-192.png',
   'icons/icon-512.png',
@@ -73,5 +73,14 @@ self.addEventListener('fetch', function (e) {
     // don't wait forever on a bad connection
     var timeout = new Promise(function (resolve) { setTimeout(resolve, 3500); }).then(fromCache);
     return Promise.race([net.catch(fromCache), timeout.then(function (r) { return r || net; })]);
+  }));
+});
+
+// tapping a song notification brings Tunebox back to the front
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+    for (var i = 0; i < list.length; i++) { if ('focus' in list[i]) return list[i].focus(); }
+    if (self.clients.openWindow) return self.clients.openWindow('./');
   }));
 });

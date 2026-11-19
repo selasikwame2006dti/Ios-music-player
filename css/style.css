@@ -1485,3 +1485,62 @@ button:focus-visible { outline: 2px solid rgba(var(--tint), 0.7); outline-offset
 .bar-row em { width: 34px; text-align: right; font-style: normal; color: var(--text-3); font-size: 11.5px; }
 @media (max-width: 900px) { .stat-tiles { grid-template-columns: 1fr 1fr; } .stat-cols { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .stats { padding: 0 10px 24px; } .tile b { font-size: 18px; } }
+
+/* connect devices */
+.qr.big { width: 280px; height: 280px; max-width: 78vw; max-height: 78vw; }
+.qr-wait { height: 120px; }
+.connect .conn-actions { display: grid; grid-template-columns: repeat(3, 1fr); grid-gap: 12px; margin-bottom: 14px; }
+.conn-big {
+  text-align: left; padding: 18px; border-radius: 18px; border: 1px solid var(--border);
+  background: var(--glass); color: var(--text); cursor: pointer; font: inherit;
+  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+}
+.conn-big:hover { background: var(--active); }
+.conn-big b { display: block; font-size: 15px; margin-bottom: 4px; }
+.conn-big span { font-size: 12px; color: var(--text-3); }
+.conn-big.party.on { background: linear-gradient(135deg, rgba(var(--tint), 0.35), rgba(var(--tint2), 0.3)); }
+.conn-btns { flex-wrap: wrap; }
+.conn-btns .btn + .btn { margin-left: 6px; }
+.tag { font-style: normal; font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--glass-2); color: var(--text-3); margin-left: 4px; }
+.scan-box { position: relative; width: 100%; aspect-ratio: 1 / 1; max-height: 60vh; border-radius: 16px; overflow: hidden; background: #000; }
+.scan-box video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scan-frame { position: absolute; inset: 15%; border: 3px solid rgba(255, 255, 255, 0.85); border-radius: 18px; box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.35); }
+@media (max-width: 720px) { .connect .conn-actions { grid-template-columns: 1fr; } }
+
+/* remote */
+.remote { padding: 0 26px 40px; max-width: 980px; }
+.remote-card { display: flex; align-items: center; padding: 20px; border-radius: 22px; margin-bottom: 12px; }
+.remote-art { width: 180px; height: 180px; border-radius: 16px; flex: none; margin-right: 22px; overflow: hidden; }
+.remote-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.remote-side { flex: 1; min-width: 0; }
+.remote-title { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-sub { font-size: 13px; color: var(--text-2); margin: 2px 0 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-bar { height: 5px; border-radius: 3px; background: var(--glass-2); overflow: hidden; margin-bottom: 12px; }
+.remote-bar i { display: block; height: 100%; background: linear-gradient(90deg, rgb(var(--tint)), rgb(var(--tint2))); transition: width 0.6s linear; }
+.remote .buttons { justify-content: flex-start; }
+.remote .buttons.dim { opacity: 0.35; pointer-events: none; }
+.remote-extra { display: flex; flex-wrap: wrap; margin: 10px 0; }
+.remote-extra .chip-btn { margin: 0 6px 6px 0; }
+.remote-next { font-size: 12.5px; color: var(--text-3); margin: 0 4px 12px; }
+.remote-search { display: flex; width: 100%; max-width: none; margin-bottom: 8px; }
+.rlib-row { display: flex; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
+.rlib-row .tt { flex: 1; min-width: 0; }
+.rlib-row .t1 { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rlib-row .t2 { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rlib-row .btn { margin-left: 6px; }
+@media (max-width: 720px) {
+  .remote { padding: 0 10px 24px; }
+  .remote-card { flex-direction: column; text-align: center; }
+  .remote-art { width: 62vw; height: 62vw; max-width: 260px; max-height: 260px; margin: 0 0 16px; }
+  .remote-side { width: 100%; }
+  .remote .buttons, .remote-extra { justify-content: center; }
+}
+body.view-remote #minibar { display: none; }
+
+/* folders on drives that aren't connected */
+.folder-list li.off { cursor: pointer; color: var(--text-3); flex-wrap: wrap; }
+.folder-list li.off::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.folder-list li small { width: 100%; padding-left: 25px; font-size: 10.5px; color: var(--text-3); }
+.folder-list li.locked small { color: var(--accent); }
+.row.offline { opacity: 0.42; }
+.row.offline .t1::after { content: " · not connected"; font-weight: 400; font-size: 11px; color: var(--text-3); }

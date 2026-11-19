@@ -192,8 +192,9 @@
     return 0;
   }
 
-  function ingest(entries, rootName) {
-    var added = [], skippedDrm = 0;
+  function ingest(entries, rootName, opts) {
+    opts = opts || {};
+    var added = [], skippedDrm = 0, relinked = [];
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       var fname = e.file.name;
@@ -208,7 +209,16 @@
       if (ext === 'lrc') { state.lrcFiles.set(e.path.replace(/\.[^.\/]+$/, '').toLowerCase(), e.file); continue; }
       if (ext === 'm4p') { skippedDrm++; continue; }
       if (AUDIO_EXT.indexOf(ext) < 0) continue;
-      if (state.byPath.has(e.path)) continue;
+      var have = state.byPath.get(e.path);
+      if (have) {
+        // same song seen again (drive plugged back in, or a fresh scan): point it at the new file
+        if (have.file !== e.file) { have.file = e.file; }
+        if (have.offline) { have.offline = false; relinked.push(have); }
+        have.broken = false;
+        if (opts.seen) opts.seen.add(e.path);
+        continue;
+      }
+      if (opts.seen) opts.seen.add(e.path);
       var t = makeTrack(e.file, e.path, ext);
       computeAlbumKey(t);
       state.tracks.push(t);
@@ -217,12 +227,17 @@
       added.push(t);
     }
     if (rootName && state.folders.indexOf(rootName) < 0) state.folders.push(rootName);
+    if (relinked.length) {
+      // covers looked up while the drive was away came back empty; look again
+      relinked.forEach(function (t) { if (coverSync.get(t.albumKey) === null) { coverCache.delete(t.albumKey); coverSync.delete(t.albumKey); } });
+    }
+    if (opts.root && opts.seen) dropMissing(opts.root, opts.seen);
     invalidate();
     renderAll();
     if (skippedDrm) toast(plural(skippedDrm, 'copy-protected iTunes file') + ' (.m4p) skipped — browsers can’t play those.', 5000);
-    if (!added.length && !skippedDrm) toast('No playable music found there.');
+    if (!added.length && !skippedDrm && !opts.quiet && !relinked.length) toast(opts.rescan ? 'No new songs.' : 'No playable music found there.');
     if (added.length) {
-      toast('Added ' + plural(added.length, 'song') + '.');
+      toast((opts.rescan || opts.quiet ? 'Found ' + plural(added.length, 'new song') : 'Added ' + plural(added.length, 'song')) + '.');
       loadMetaCache().then(function () {
         var need = applyCache(added);
         invalidate();
@@ -276,6 +291,7 @@
     tagRunning++;
     while (tagQueue.length) {
       var t = tagQueue.shift();
+      if (t.offline) { tagDone++; continue; }
       var m = await Meta.read(t.file, t.ext, false);
       if (m.title) t.title = m.title;
       if (m.artist) t.artist = m.artist;
@@ -315,14 +331,14 @@
   var rowsSoon = throttle(function () { renderRows(); updateHeroMeta(); }, 1000);
 
   function startDurations() {
-    durQueue = state.tracks.filter(function (t) { return !t.duration && !t.broken; });
+    durQueue = state.tracks.filter(function (t) { return !t.duration && !t.broken && !t.offline; });
     if (!durRunning) durWorker();
   }
   async function durWorker() {
     durRunning = true;
     while (durQueue.length) {
       var t = durQueue.shift();
-      if (t.duration) continue;
+      if (t.duration || t.offline) continue;
       t.duration = await probeDuration(t.file);
       if (t.duration) markMetaDirty(t);
       rowsSoon();
@@ -377,6 +393,7 @@
     if (!t) return Promise.resolve(null);
     var key = t.albumKey;
     if (coverCache.has(key)) return coverCache.get(key);
+    if (t.offline && !(typeof coverEdits === 'object' && coverEdits && coverEdits[key])) return Promise.resolve(null);
     var p = limited(function () {
       if (typeof coverEdits === 'object' && coverEdits && coverEdits[key]) return processCover(coverEdits[key]);
       return Meta.read(t.file, t.ext, true).then(function (m) {
@@ -642,12 +659,12 @@
 
   /* ------------------------------ rendering ------------------------------ */
 
-  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next', favorites: 'Favourites', settings: 'Settings', stats: 'Listening Stats', playlists: 'Playlists' };
+  var VIEW_TITLES = { songs: 'Songs', albums: 'Albums', artists: 'Artists', queue: 'Up Next', favorites: 'Favourites', settings: 'Settings', stats: 'Listening Stats', playlists: 'Playlists', connect: 'Connect devices', remote: 'Remote' };
   var scroller = $('scroller');
 
   function isListView(v) { return v === 'songs' || v === 'queue' || v === 'album' || v === 'artist' || v === 'favorites' || v === 'playlist'; }
   var DETAIL_VIEWS = { album: 1, artist: 1, playlist: 1 };
-  var PAGE_VIEWS = { settings: 1, stats: 1, playlists: 1 };
+  var PAGE_VIEWS = { settings: 1, stats: 1, playlists: 1, connect: 1, remote: 1 };
   function rowH() { return state.view === 'album' ? 48 : 56; }
 
   function setView(view, detail) {
@@ -700,13 +717,17 @@
     $('settingsView').hidden = state.view !== 'settings';
     $('statsView').hidden = state.view !== 'stats';
     $('playlistGrid').hidden = state.view !== 'playlists';
+    $('connectView').hidden = state.view !== 'connect';
+    $('remoteView').hidden = state.view !== 'remote';
+    document.body.classList.toggle('view-remote', state.view === 'remote');
+    if (state.view !== 'remote') { var rv = $('remoteView'); if (rv.firstChild) rv.innerHTML = ''; }
     $('empty').hidden = has || isSet;
     $('hero').hidden = !has && !isSet;
     $('btnClear').hidden = !has;
     $('countSongs').textContent = has ? state.tracks.length : '';
     $('countAlbums').textContent = has ? getAlbums().length : '';
     $('countArtists').textContent = has ? getArtists().length : '';
-    $('folderList').innerHTML = state.folders.map(function (f) { return '<li title="' + esc(f) + '">' + esc(f) + '</li>'; }).join('');
+    renderFolderList();
 
     var v = state.view;
     $('songList').hidden = !has || !isListView(v);
@@ -723,6 +744,8 @@
       if (v === 'settings' && !soft) { renderSettings(); updateStorageText(); }
       if (v === 'stats' && !soft) renderStats();
       if (v === 'playlists') renderPlaylists();
+      if (v === 'connect') renderConnect();
+      if (v === 'remote') renderRemote();
       $('noResults').hidden = true;
       return;
     }
@@ -823,6 +846,8 @@
       txt = plural(playlists.length, 'playlist') + ' · plus 4 smart playlists that update themselves';
     } else if (v === 'stats') {
       txt = 'Everything is counted on this device only.';
+    } else if (v === 'connect') {
+      txt = 'Use your phone as a remote, send songs, keep playlists in sync, or let friends add songs. Works over Wi-Fi, a phone hotspot, or the internet.';
     }
     el.innerHTML = txt;
   }
@@ -877,7 +902,7 @@
     var html = '';
     for (var i = range[0]; i < range[1]; i++) {
       var t = state.byId.get(ids[i]);
-      var cls = 'row' + (t.id === cur ? ' playing' : '') + (t.id === state.selectedId ? ' sel' : '') + (t.broken ? ' broken' : '');
+      var cls = 'row' + (t.id === cur ? ' playing' : '') + (t.id === state.selectedId ? ' sel' : '') + (t.broken ? ' broken' : '') + (t.offline ? ' offline' : '');
       var num = t.id === cur ? '<span class="eq"><i></i><i></i><i></i></span>'
               : '<span class="n">' + (albumView ? (t.track || '') : i + 1) + '</span>';
       var thumb = albumView ? '' :
@@ -1068,6 +1093,17 @@
 
   function loadTrack(t, autoplay, startAt) {
     if (!t) return;
+    if (t.offline) {
+      var root = rootOf(t), path = t.path;
+      if (t.offline === 'locked') {
+        unlockFolder(root).then(function (ok) { var nt = ok && state.byPath.get(path); if (nt && !nt.offline) loadTrack(nt, autoplay, startAt); });
+        return;
+      }
+      toast('“' + root + '” isn’t connected — skipping its songs.', 2200);
+      var ni = nextIndex();
+      if (ni >= 0 && ni !== state.qIndex) { state.qIndex = ni; loadTrack(state.byId.get(state.queue[ni]), autoplay); }
+      return;
+    }
     cancelFade();
     var prev = state.current;
     pendingSeek = startAt || 0;
@@ -1080,7 +1116,7 @@
   // Fade the current song out while the next one fades in.
   function crossfadeTo(i, secs) {
     var t = state.byId.get(state.queue[i]);
-    if (!t) return false;
+    if (!t || t.offline) return false;
     cancelFade();
     var fromIdx = active, toIdx = 1 - active, from = decks[fromIdx], to = decks[toIdx];
     var prev = state.current;
@@ -1136,7 +1172,8 @@
       return;
     }
     ensureAudioGraph();
-    if (ac && ac.state === 'suspended') ac.resume();
+    if (ac && outputChanged) restartOutput();
+    else if (ac && ac.state === 'suspended') ac.resume();
     if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
     if (deckGains && settings.softPause !== false && audio.paused) { rampDeck(active, 0, 0); rampDeck(active, 1, 0.25); }
     var p = audio.play();
@@ -1201,13 +1238,15 @@
     state.qIndex = Math.max(0, state.queue.indexOf(cur));
   }
 
+  function playableAt(i) { var t = state.byId.get(state.queue[i]); return !!t && !t.offline; }
   function nextIndex() {
     djFill();
     var i = state.qIndex + 1;
+    while (i < state.queue.length && !playableAt(i)) i++;
     if (i < state.queue.length) return i;
     if (state.repeat === 'all' && state.queue.length) {
       if (state.shuffle) shuffleArr(state.queue);
-      return 0;
+      for (var j = 0; j < state.queue.length; j++) if (playableAt(j)) return j;
     }
     return -1;
   }
@@ -1281,17 +1320,26 @@
       updateTime(); updateLyricHighlight(); sampleStats(); listenTick(); ensureAudible(); maybeAutoCrossfade(); saveLastSoon();
     });
     d.addEventListener('seeked', function () { if (this === audio) { lyricIdx = -1; updateLyricHighlight(); } });
+    ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata'].forEach(function (ev) { d.addEventListener(ev, function () { if (this === audio) lastPosState = 0; }); });
     d.addEventListener('error', function () {
       if (this !== audio) return;
       var t = state.current;
       if (!t || !audio.getAttribute('src')) return;
+      var dk = this;
+      checkSourceGone(t).then(function (gone) {
+        if (dk !== audio || state.current !== t) return;
+        if (gone) { renderRows(); next(false); return; }
+        cantPlay(t);
+      });
+    });
+  });
+  function cantPlay(t) {
       t.broken = true;
       renderRows();
       errorStreak++;
       toast('Can’t play “' + t.title + '” in this browser' + (t.ext === 'aiff' || t.ext === 'aif' || t.ext === 'caf' ? ' (try Safari for AIFF/ALAC).' : '.'));
       if (errorStreak < 5) next(false); else { errorStreak = 0; pause(); }
-    });
-  });
+  }
 
   /* ---------------- listening stats (used by the DJ) ---------------- */
   var stats = {};
@@ -1350,7 +1398,7 @@
     var best = [];
     for (var i = 0; i < state.tracks.length; i++) {
       var c = state.tracks[i];
-      if (c.broken || queued.has(c.id)) continue;
+      if (c.broken || c.offline || queued.has(c.id)) continue;
       var sc = Math.random() * (1 + variety * 4);
       if (recent.has(c.path)) sc -= 40;
       if (ref) {
@@ -1430,6 +1478,7 @@
     updateUpNext();
   }
 
+  var lastPosState = 0;
   function updateTime() {
     var d = audio.duration || (state.current && state.current.duration) || 0;
     if (!seeking) {
@@ -1441,7 +1490,9 @@
       $$('.t-cur').forEach(function (el) { el.textContent = fmtTime(audio.currentTime); });
     }
     $$('.t-dur').forEach(function (el) { el.textContent = fmtTime(d); });
-    if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && d && isFinite(d)) {
+    var nowMs = Date.now();
+    if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && d && isFinite(d) && (nowMs - lastPosState > 4000 || seeking)) {
+      lastPosState = nowMs;
       try { navigator.mediaSession.setPositionState({ duration: d, position: Math.min(audio.currentTime, d), playbackRate: audio.playbackRate }); } catch (e) { /* ignore */ }
     }
   }
@@ -1475,14 +1526,30 @@
     arts.forEach(function (el) { paintCover(el, t, t.album); });
 
     var ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
-    if (ms && window.MediaMetadata) ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album });
-    getCover(t).then(function (c) {
-      if (state.current !== t) return;
-      if (ms && window.MediaMetadata && c) {
-        ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album, artwork: [{ src: c.url, sizes: '400x400' }] });
-      }
+    var appArt = [{ src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }];
+    if (ms && window.MediaMetadata) { try { ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album, artwork: appArt }); } catch (e) { /* ignore */ } }
+    getCover(t).then(function (c) { return c ? coverForSession(c.url) : null; }).then(function (art) {
+      if (state.current !== t || !ms || !window.MediaMetadata || !art) return;
+      try { ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album, artwork: [{ src: art, sizes: '512x512', type: 'image/jpeg' }] }); } catch (e) { /* ignore */ }
     });
     if (!(state.view === 'album' || state.view === 'artist')) applyViewTint();
+  }
+
+  // lock screens and notification shades can't always read blob: links, so hand them a small JPEG
+  function coverForSession(url) {
+    return new Promise(function (res) {
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var cv = document.createElement('canvas'), n = Math.min(512, Math.max(img.naturalWidth, 96));
+          cv.width = cv.height = n;
+          cv.getContext('2d').drawImage(img, 0, 0, n, n);
+          res(cv.toDataURL('image/jpeg', 0.85));
+        } catch (e) { res(url); }
+      };
+      img.onerror = function () { res(null); };
+      img.src = url;
+    });
   }
 
   function updateUpNext() {
@@ -1541,7 +1608,7 @@
   // Built on first play (browsers require a click first). Skipped on iPhone/iPad, where routing
   // audio through Web Audio can stop playback when the screen locks.
   var ac = null, eqNodes = null, analyser = null, freq = null, deckGains = null, trims = null, masterGain = null, leveller = null, levelMakeup = null;
-  var preampNode = null, dryNode = null, wetNode = null, limiter = null;
+  var preampNode = null, dryNode = null, wetNode = null, limiter = null, convNode = null, eqOut = null, convOn = false;
   var EQ_BANDS = [
     { f: 32, type: 'lowshelf', label: '32' },
     { f: 64, type: 'peaking', label: '64' },
@@ -1593,7 +1660,7 @@
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     try {
-      ac = new AC();
+      try { ac = new AC({ latencyHint: 'playback' }); } catch (e0) { ac = new AC(); }
       preampNode = ac.createGain();
       trims = [];
       deckGains = decks.map(function (d, i) {
@@ -1624,11 +1691,12 @@
       routeLeveller();
       dryNode = ac.createGain();
       wetNode = ac.createGain();
-      var conv = ac.createConvolver();
-      conv.buffer = makeImpulse(2.8, 2.4);
+      // the reverb is heavy work, so it's only wired in while it's actually turned up
+      convNode = ac.createConvolver();
+      convNode.buffer = makeImpulse(2.8, 2.4);
+      eqOut = node;
       node.connect(dryNode);
-      node.connect(conv);
-      conv.connect(wetNode);
+      convNode.connect(wetNode);
       // a limiter catches peaks, so big EQ boosts get loud without crackling
       limiter = ac.createDynamicsCompressor();
       limiter.threshold.value = -1.5;
@@ -1648,6 +1716,7 @@
       masterGain.connect(ac.destination);
       // keep audio flowing in the background: if the system pauses the audio engine, wake it again
       ac.onstatechange = function () { if (ac.state !== 'running' && !audio.paused) ac.resume(); };
+      watchOutput();
       applyEq();
       applyFx();
       applyVolumeToDecks();
@@ -1656,6 +1725,44 @@
       ac = null; eqNodes = null; analyser = null; deckGains = null; trims = null; masterGain = null;
     }
   }
+  // When headphones/Bluetooth connect or disconnect, phones move the sound to another output.
+  // Restarting the audio engine there stops it from stuttering on the new output.
+  var outputChanged = false, outputWatched = false;
+  function watchOutput() {
+    if (outputWatched || !navigator.mediaDevices || !navigator.mediaDevices.addEventListener) return;
+    outputWatched = true;
+    navigator.mediaDevices.addEventListener('devicechange', function () {
+      outputChanged = true;
+      setTimeout(function () { if (!audio.paused) restartOutput(); }, 600);
+    });
+  }
+  function restartOutput() {
+    outputChanged = false;
+    if (!ac) return Promise.resolve();
+    return ac.suspend().catch(function () {}).then(function () {
+      return new Promise(function (r) { setTimeout(r, 120); });
+    }).then(function () { return ac.resume(); }).catch(function () {});
+  }
+  // a stutter check: if the audio clock falls behind real time, the output is struggling
+  var clockCheck = { at: 0, t: 0, bad: 0, fixes: [] };
+  setInterval(function () {
+    if (!ac || audio.paused || ac.state !== 'running') { clockCheck.at = 0; return; }
+    var now = performance.now() / 1000, t = ac.currentTime;
+    if (clockCheck.at) {
+      var real = now - clockCheck.at, got = t - clockCheck.t;
+      if (real > 0.5 && got < real * 0.85) clockCheck.bad++; else clockCheck.bad = 0;
+      if (clockCheck.bad >= 2) {
+        clockCheck.bad = 0;
+        clockCheck.fixes = clockCheck.fixes.filter(function (x) { return now - x < 120; });
+        clockCheck.fixes.push(now);
+        restartOutput();
+        if (clockCheck.fixes.length === 3) toast('Sound keeps stuttering on this device. If it continues, turn off Settings → App → Sound effects engine.', 6000);
+      }
+    }
+    clockCheck.at = now;
+    clockCheck.t = t;
+  }, 1000);
+
   function routeLeveller() {
     if (!preampNode || !leveller) return;
     try { preampNode.disconnect(); } catch (e) { /* ignore */ }
@@ -1671,6 +1778,8 @@
     var pre = typeof settings.preamp === 'number' ? settings.preamp : 0;
     preampNode.gain.setTargetAtTime(Math.pow(10, pre / 20), ac.currentTime, 0.05);
     var r = settings.reverb || 0;
+    if (r > 0 && !convOn) { eqOut.connect(convNode); convOn = true; }
+    else if (r <= 0 && convOn) { try { eqOut.disconnect(convNode); } catch (e) { /* ignore */ } convOn = false; }
     wetNode.gain.setTargetAtTime(r * 1.2, ac.currentTime, 0.08);
     dryNode.gain.setTargetAtTime(1 - r * 0.35, ac.currentTime, 0.08);
   }
@@ -1748,6 +1857,7 @@
   var viz = $('viz'), vctx = viz.getContext('2d');
   var BARS = 32, barH = new Float32Array(BARS), vizRunning = false, vizFrame = 0, vizPhase = 0;
   function vizVisible() { return viz.offsetParent !== null && !document.hidden; }
+  var vizGrad = null, vizGradAt = 0;
   function startViz() {
     if (vizRunning) return;
     vizRunning = true;
@@ -1761,11 +1871,14 @@
       var w = viz.width, h = viz.height, gap = 6;
       var bw = (w - gap * (BARS - 1)) / BARS;
       vctx.clearRect(0, 0, w, h);
-      var cs = getComputedStyle(document.documentElement);
-      var g = vctx.createLinearGradient(0, 0, w, 0);
-      g.addColorStop(0, 'rgb(' + cs.getPropertyValue('--tint').trim() + ')');
-      g.addColorStop(1, 'rgb(' + cs.getPropertyValue('--tint2').trim() + ')');
-      vctx.fillStyle = g;
+      if (vizFrame - vizGradAt > 60 || !vizGrad) {
+        var cs = getComputedStyle(document.documentElement);
+        vizGrad = vctx.createLinearGradient(0, 0, w, 0);
+        vizGrad.addColorStop(0, 'rgb(' + cs.getPropertyValue('--tint').trim() + ')');
+        vizGrad.addColorStop(1, 'rgb(' + cs.getPropertyValue('--tint2').trim() + ')');
+        vizGradAt = vizFrame;
+      }
+      vctx.fillStyle = vizGrad;
       if (analyser && playing) analyser.getByteFrequencyData(freq);
       vizPhase += playing ? 0.12 : 0;
       var settled = true;
@@ -1988,9 +2101,9 @@
     var handlers = {
       play: play, pause: pause,
       previoustrack: prev, nexttrack: function () { next(false); },
-      seekbackward: function () { audio.currentTime = Math.max(0, audio.currentTime - 10); },
-      seekforward: function () { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10); },
-      seekto: function (d) { if (d && typeof d.seekTime === 'number') audio.currentTime = d.seekTime; },
+      seekbackward: function (d) { audio.currentTime = Math.max(0, audio.currentTime - ((d && d.seekOffset) || 10)); lastPosState = 0; updateTime(); },
+      seekforward: function (d) { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + ((d && d.seekOffset) || 10)); lastPosState = 0; updateTime(); },
+      seekto: function (d) { if (d && typeof d.seekTime === 'number') { if (d.fastSeek && audio.fastSeek) audio.fastSeek(d.seekTime); else audio.currentTime = d.seekTime; lastPosState = 0; updateTime(); } },
       stop: function () { pause(); }
     };
     Object.keys(handlers).forEach(function (k) {
@@ -2003,7 +2116,8 @@
   var hasFSA = typeof window.showDirectoryPicker === 'function';
 
   async function openFolder() {
-    if (IS_IOS || (IS_ANDROID && !window.showDirectoryPicker)) { $('fileInput').click(); return; } // phones pick songs, not folders
+    if (IS_IOS) { $('fileInput').click(); return; } // iPhone can only pick songs
+    if (IS_ANDROID && !window.showDirectoryPicker) { $('dirInput').click(); return; } // Android: pick a whole folder
     if (!hasFSA) { $('dirInput').click(); return; }
     var handle;
     try {
@@ -2020,16 +2134,30 @@
     await scanHandle(handle);
   }
 
-  async function scanHandle(handle) {
+  async function scanHandle(handle, opts) {
     var out = [];
-    setStatus('Looking for music…');
+    opts = opts || {};
+    if (!opts.quiet) setStatus('Looking for music…');
+    var complete = true;
     try {
       await walkHandle(handle, handle.name, out);
     } catch (e) {
-      toast('Couldn’t read that folder: ' + (e && e.message ? e.message : e));
+      complete = false;
+      if (!out.length) {
+        // the folder is gone for now — usually a USB stick, SD card or external drive that's unplugged
+        setStatus('');
+        folderMissing(handle, 'missing');
+        return false;
+      }
+      toast('Couldn’t read all of “' + handle.name + '”: ' + (e && e.message ? e.message : e));
     }
     setStatus('');
-    ingest(out, handle.name);
+    var wasAway = folderStatus.get(handle.name);
+    folderStatus.set(handle.name, { handle: handle, status: 'ok' });
+    ingest(out, handle.name, { quiet: opts.quiet, rescan: opts.rescan, root: complete ? handle.name : null, seen: new Set() });
+    if (wasAway && wasAway.status !== 'ok') toast('“' + handle.name + '” is connected again ✓', 2200);
+    renderFolderList();
+    return true;
   }
 
   async function walkHandle(dir, prefix, out) {
@@ -2152,6 +2280,117 @@
     await idbSet('handles', list);
   }
 
+  /* ---------------- folders on drives that come and go ---------------- */
+  // A folder can be unavailable because its drive is unplugged ('missing'), because the browser
+  // needs permission again after a restart ('locked'), or because it was picked without a way to
+  // reopen it later ('removed'). Its songs stay in the library, greyed out, from the saved song info.
+  var folderStatus = new Map();
+  function rootOf(t) { return t.path.split('/')[0]; }
+  function folderMissing(handle, why) {
+    var name = handle.name || handle;
+    var had = folderStatus.get(name);
+    folderStatus.set(name, { handle: handle.name ? handle : (had && had.handle), status: why });
+    var n = 0;
+    state.tracks.forEach(function (t) { if (rootOf(t) === name && !t.offline) { t.offline = why; n++; } });
+    if (state.folders.indexOf(name) < 0) state.folders.push(name);
+    return loadMetaCache().then(function (m) {
+      m.forEach(function (r, path) {
+        if (path.indexOf(name + '/') !== 0 || state.byPath.has(path)) return;
+        var ext = extOf(path);
+        if (AUDIO_EXT.indexOf(ext) < 0) return;
+        var f;
+        try { f = new File([], path.split('/').pop()); } catch (e) { f = new Blob([]); }
+        var t = makeTrack(f, path, ext);
+        META_FIELDS.forEach(function (k) { if (r[k] !== undefined && r[k] !== '') t[k] = r[k]; });
+        t.tagged = true;
+        t.offline = why;
+        computeAlbumKey(t);
+        applyEdit(t);
+        state.tracks.push(t);
+        state.byId.set(t.id, t);
+        state.byPath.set(t.path, t);
+        n++;
+      });
+      invalidate();
+      renderAll(true);
+      renderFolderList();
+      if (why === 'missing' && n) setStatus('“' + name + '” isn’t connected');
+      return n;
+    });
+  }
+  // songs that vanished from a folder we could fully read were deleted or moved: take them out
+  function dropMissing(root, seen) {
+    var gone = state.tracks.filter(function (t) { return rootOf(t) === root && !seen.has(t.path) && t !== state.current; });
+    if (!gone.length) return;
+    var goneIds = new Set(gone.map(function (t) { return t.id; }));
+    state.tracks = state.tracks.filter(function (t) { return !goneIds.has(t.id); });
+    gone.forEach(function (t) { state.byId.delete(t.id); state.byPath.delete(t.path); });
+    // forget their saved song info too, so they don't come back as 'not connected' later
+    gone.forEach(function (t) { if (metaCache) metaCache.delete(t.path); });
+    idbOpen().then(function (db) {
+      var st = db.transaction('meta', 'readwrite').objectStore('meta');
+      gone.forEach(function (t) { st.delete(t.path); });
+    }).catch(function () {});
+    var cur = state.queue[state.qIndex];
+    state.queue = state.queue.filter(function (id) { return !goneIds.has(id); });
+    state.originalQueue = state.originalQueue.filter(function (id) { return !goneIds.has(id); });
+    state.qIndex = Math.max(-1, state.queue.indexOf(cur));
+  }
+  // ask again for a folder that needs permission (must follow a click)
+  async function unlockFolder(name) {
+    var st = folderStatus.get(name);
+    if (!st || !st.handle || !st.handle.requestPermission) return false;
+    var p = 'denied';
+    try { p = await st.handle.requestPermission({ mode: 'read' }); } catch (e) { /* ignore */ }
+    if (p !== 'granted') { toast('Permission not given for “' + name + '”.'); return false; }
+    $('reopenBanner').hidden = true;
+    return scanHandle(st.handle, { quiet: true });
+  }
+  // a song couldn't be read: find out if its whole folder went away (drive pulled out mid-play)
+  function checkSourceGone(t) {
+    var f = t.file;
+    if (!f || !f.size) return Promise.resolve(false);
+    return readAB(f, 1).then(function () { return false; }, function () {
+      var name = rootOf(t), st = folderStatus.get(name);
+      folderMissing(st && st.handle ? st.handle : name, st && st.handle ? 'missing' : 'removed');
+      toast('“' + name + '” was disconnected. Its songs will play again when it’s back.', 4000);
+      return true;
+    });
+  }
+  // every few seconds, see whether an unplugged drive is back
+  var driveCheckBusy = false;
+  async function checkDrives() {
+    if (driveCheckBusy) return;
+    var away = [];
+    folderStatus.forEach(function (st) { if (st.status === 'missing' && st.handle && st.handle.values) away.push(st.handle); });
+    if (!away.length) return;
+    driveCheckBusy = true;
+    for (var i = 0; i < away.length; i++) {
+      var back = false;
+      try { var it = away[i].values(); await it.next(); back = true; } catch (e) { back = false; }
+      if (back) await scanHandle(away[i], { quiet: true });
+    }
+    driveCheckBusy = false;
+  }
+  setInterval(checkDrives, 8000);
+  window.addEventListener('focus', checkDrives);
+  function renderFolderList() {
+    $('folderList').innerHTML = state.folders.map(function (f) {
+      var st = folderStatus.get(f), s2 = st ? st.status : 'ok';
+      var label = s2 === 'missing' ? 'Not connected' : s2 === 'locked' ? 'Tap to reconnect' : s2 === 'removed' ? 'Pick again to reconnect' : '';
+      return '<li title="' + esc(f) + '" class="' + (s2 !== 'ok' ? 'off ' + s2 : '') + '" data-folder="' + esc(f) + '">' + esc(f) + (label ? '<small>' + label + '</small>' : '') + '</li>';
+    }).join('');
+  }
+  $('folderList').addEventListener('click', function (e) {
+    var li = e.target.closest('[data-folder]');
+    if (!li) return;
+    var name = li.getAttribute('data-folder'), st = folderStatus.get(name);
+    if (!st || st.status === 'ok') return;
+    if (st.status === 'locked') unlockFolder(name);
+    else if (st.status === 'missing') { toast('Plug in the drive with “' + name + '” — Tunebox picks it up by itself.', 3000); checkDrives(); }
+    else if (st.status === 'removed') $('dirInput').click();
+  });
+
   async function checkRemembered() {
     if (!hasFSA) return;
     var list = (await idbGet('handles')) || [];
@@ -2163,6 +2402,7 @@
       (perm === 'granted' && settings.autoOpen !== false ? ready : needAsk).push(list[i]);
     }
     for (var j = 0; j < ready.length; j++) await scanHandle(ready[j]);
+    needAsk.forEach(function (h) { folderMissing(h, 'locked'); });
     if (needAsk.length) {
       $('reopenText').innerHTML = 'Welcome back! Reopen <b>' + needAsk.map(function (h) { return esc(h.name); }).join('</b>, <b>') + '</b> to pick up where you left off.';
       $('reopenBanner').hidden = false;
@@ -2189,7 +2429,7 @@
     blue: [[59, 130, 246], [6, 182, 212]],
     green: [[16, 185, 129], [6, 182, 212]]
   };
-  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level'];
+  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level', 'watchFolders'];
   // these default depending on the device
   var DEVICE_DEFAULTS = { analyze: function () { return !IS_PHONE; }, keepFiles: function () { return IS_PHONE || !hasFSA; } };
   function isOn(key) {
@@ -2295,11 +2535,12 @@
       sCard('Library', plural(state.tracks.length, 'song') + ' · ' + plural(getAlbums().length, 'album') + ' · song info saved for ' + plural(cached, 'song'),
         sRow('Open library automatically', 'Load your music folder when Tunebox starts (Chrome).', sSwitch('autoOpen')) +
         sRow('Add music', 'Folders or single songs.', sBtn('Add folder', 'data-cmd="open-folder"', true) + ' ' + sBtn('Add songs', 'data-cmd="add-files"')) +
-        sRow('Rescan folders', 'Pick up new songs you’ve added.', sBtn('Rescan', 'data-action="rescan"')) +
+        sRow('Check for new songs', hasFSA ? 'Look in your music folders for songs you’ve added.' : 'Pick your music folder again — only new songs are added.', sBtn('Check now', 'data-action="rescan"')) +
+        (hasFSA ? sRow('Watch folders', 'Automatically add new songs when you come back to Tunebox (and every 10 minutes).', sSwitch('watchFolders')) : '') +
         sRow('Even out volume', 'Plays quiet and loud songs at the same level (uses ReplayGain tags, or measures each song).', sSwitch('level')) +
         sRow('Smooth loudness peaks', 'Gentle compression — great for noisy places or laptop speakers.', sSwitch('compress')) +
         sRow('Analyse songs in the background', 'Measures loudness and tempo (for the DJ), a little at a time. ' + analysedCount() + ' of ' + state.tracks.length + ' done.', sSwitch('analyze')) +
-        sRow('Keep picked songs on this device', 'Songs added with “Choose songs” stay in Tunebox after closing — handy on phones. ' + (storageText || ''), sSwitch('keepFiles')) +
+        sRow('Keep picked songs on this device', 'Songs you pick (or folders you choose on a phone) stay in Tunebox after closing. ' + (storageText || ''), sSwitch('keepFiles')) +
         sRow('Saved songs', 'Remove the copies Tunebox kept (your originals stay).', sBtn('Remove', 'data-action="clear-files"')) +
         sRow('Saved song info', 'Makes big libraries load instantly. Clear it if tags look wrong.', sBtn('Clear', 'data-action="clear-cache"')) +
         sRow('Remove everything', 'Your music files are never touched.', sBtn('Clear library', 'data-action="clear"'))) +
@@ -2451,17 +2692,36 @@
       });
     }).catch(function () {}).then(function () { metaCache = new Map(); });
   }
-  async function rescanFolders() {
-    if (!hasFSA) { toast('Choose your music folder again to pick up new songs.'); openFolder(); return; }
+  async function rescanFolders(quiet) {
+    if (!hasFSA) {
+      if (quiet) return;
+      if (IS_IOS) { $('fileInput').click(); return; }
+      toast('Pick the same folder again. Only new songs are added.', 3500);
+      setTimeout(function () { $('dirInput').click(); }, 400);
+      return;
+    }
     var list = (await idbGet('handles')) || [];
-    if (!list.length) { openFolder(); return; }
+    if (!list.length) { if (!quiet) openFolder(); return; }
+    var before = state.tracks.length;
     for (var i = 0; i < list.length; i++) {
       var p = 'prompt';
       try { p = await list[i].queryPermission({ mode: 'read' }); } catch (e) { /* ignore */ }
-      if (p !== 'granted') { try { p = await list[i].requestPermission({ mode: 'read' }); } catch (e) { /* ignore */ } }
-      if (p === 'granted') await scanHandle(list[i]);
+      if (p !== 'granted' && !quiet) { try { p = await list[i].requestPermission({ mode: 'read' }); } catch (e) { /* ignore */ } }
+      if (p === 'granted') await scanHandle(list[i], { quiet: true });
     }
+    if (!quiet && state.tracks.length === before) toast('No new songs.', 1600);
   }
+  // Watch folders: when you come back to Tunebox, quietly look for songs you've added since
+  var lastWatch = Date.now();
+  function watchFolders() {
+    if (!hasFSA || !isOn('watchFolders') || document.hidden || !state.folders.length) return;
+    if (Date.now() - lastWatch < 90000) return;
+    lastWatch = Date.now();
+    rescanFolders(true);
+  }
+  document.addEventListener('visibilitychange', watchFolders);
+  window.addEventListener('focus', watchFolders);
+  setInterval(function () { if (!document.hidden && Date.now() - lastWatch > 10 * 60000) { lastWatch = 0; watchFolders(); } }, 60000);
 
   /* ------------------------------ files opened from the OS ------------------------------ */
   if ('launchQueue' in window && window.launchQueue.setConsumer) {
@@ -2648,6 +2908,7 @@
   function toggleFavFor(t) {
     if (favs[t.path]) delete favs[t.path]; else favs[t.path] = 1;
     favKeys.delete(trackKey(t));
+    if (typeof pushSyncSoon === 'function') pushSyncSoon();
     lsSet('tunebox.favs', Object.keys(favs));
     lsSet('tunebox.favKeys', Array.from(favKeys));
     updateFavButtons();
@@ -2674,7 +2935,7 @@
     forgotten: { name: 'Not Heard in a While', desc: 'Old favourites from more than a month ago' },
     never: { name: 'Never Played', desc: 'Songs waiting for their first listen' }
   };
-  function savePlaylists() { lsSet('tunebox.playlists', playlists); renderPlaylistNav(); if (state.view === 'playlists') renderPlaylists(); }
+  function savePlaylists() { lsSet('tunebox.playlists', playlists); if (typeof pushSyncSoon === 'function') pushSyncSoon(); renderPlaylistNav(); if (state.view === 'playlists') renderPlaylists(); }
   function getPl(id) { for (var i = 0; i < playlists.length; i++) if (playlists[i].id === id) return playlists[i]; return null; }
   function createPlaylist(name, ids) {
     var p = { id: 'pl' + Date.now().toString(36) + Math.floor(Math.random() * 1e4), name: name, items: [], created: Date.now() };
@@ -2860,7 +3121,7 @@
   }
   var OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   function analysisOn() { return !!OAC && (typeof settings.analyze === 'boolean' ? settings.analyze : !IS_PHONE); }
-  function needsAnalysis(t) { return !t.broken && !t.anaFail && (typeof t.loud !== 'number' || !t.bpm); }
+  function needsAnalysis(t) { return !t.broken && !t.offline && !t.anaFail && (typeof t.loud !== 'number' || !t.bpm); }
   var anaBusy = false, anaCursor = 0, anaDone = 0;
   function pickToAnalyse() {
     if (state.current && needsAnalysis(state.current)) return state.current;
@@ -3256,7 +3517,7 @@
     }
     return p;
   }
-  function applyPayload(p) {
+  function applyPayload(p, quiet) {
     var nPl = 0, nFav = 0;
     (p.pl || []).forEach(function (x) {
       var mine = playlists.filter(function (y) { return y.name === x.n; })[0];
@@ -3287,7 +3548,8 @@
     applyFx();
     invalidate();
     renderAll();
-    toast('Imported ' + plural(nPl, 'playlist') + ' and ' + plural(nFav, 'favourite'), 2600);
+    if (!quiet) toast('Imported ' + plural(nPl, 'playlist') + ' and ' + plural(nFav, 'favourite'), 2600);
+    else if (nPl || nFav) toast('Synced ' + (nPl ? plural(nPl, 'new playlist') : plural(nFav, 'favourite')), 1600);
   }
   async function openSync() {
     var link = location.origin + location.pathname + '#sync=' + await pack(syncPayload(false));
@@ -3359,18 +3621,739 @@
     var items = [
       ['albums', 'Albums', 'view'], ['artists', 'Artists', 'view'], ['playlists', 'Playlists', 'view'], ['favorites', 'Favourites', 'view'],
       ['queue', 'Up Next', 'view'], ['stats', 'Listening Stats', 'view'], ['eq', 'Equalizer & Vibes', 'cmd'], ['sleep', 'Sleep timer', 'cmd'],
-      ['sync', 'Send to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
-    ];
+      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
+    ].filter(function (it) { return !(IS_IOS && it[0] === 'open-folder'); });
     openModal('<h3>Browse</h3><div class="browse-list">' + items.map(function (it) {
       return '<button ' + (it[2] === 'view' ? 'data-view="' + it[0] + '"' : 'data-cmd="' + it[0] + '"') + ' data-close>' + it[1] + '<span>›</span></button>';
     }).join('') + '</div>', null, 'sheet');
   }
+
+  /* =====================================================================
+     Connect devices: phone remote, send songs, live sync, party queue.
+     Devices talk directly (WebRTC, encrypted). They only need to swap a small
+     "hello" once — by scanning QR codes (works offline, e.g. over a phone hotspot)
+     or through a free public relay (PeerJS) when both are online.
+     ===================================================================== */
+
+  var STUN = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+  var peers = [];          // { id, pc, dc, name, role, kind, open, remoteState, files }
+  var relay = null;        // { ws, id, open, onmsg }
+  var hostPending = null;  // our own offer for offline pairing { pc, dc, peer }
+  var remotePeer = null;   // the peer we're currently remote-controlling
+  var partyOn = false;
+  var syncMuted = false;
+
+  function defaultDeviceName() {
+    if (IS_IOS) return /iPad/.test(navigator.userAgent) ? 'iPad' : 'iPhone';
+    if (IS_ANDROID) return 'Android phone';
+    if (/Windows/.test(navigator.userAgent)) return 'Windows PC';
+    if (/Mac/.test(navigator.userAgent)) return 'Mac';
+    return 'Computer';
+  }
+  function deviceName() { return settings.deviceName || defaultDeviceName(); }
+  function randId(n) {
+    var a = new Uint8Array(n || 8), s = '';
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    for (var i = 0; i < a.length; i++) s += 'abcdefghijkmnpqrstuvwxyz23456789'[a[i] % 32];
+    return s;
+  }
+
+  /* ---------------- relay (only used to say hello, via PeerJS) ---------------- */
+  function loadScript(src, test) {
+    if (test()) return Promise.resolve();
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.onload = function () { test() ? res() : rej(new Error('load')); };
+      s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  function relayConnect() {
+    if (relay && relay.ready && !relay.dead) return relay.ready;
+    relay = { id: 'tunebox-' + randId(10), open: false, dead: false, peer: null };
+    var r = relay;
+    r.ready = loadScript('js/vendor/peerjs.js', function () { return !!window.Peer; }).then(function () {
+      return new Promise(function (resolve, reject) {
+        var pj = new window.Peer(r.id, { debug: 0, config: { iceServers: STUN } });
+        r.peer = pj;
+        var t = setTimeout(function () { r.dead = true; try { pj.destroy(); } catch (e) {} reject(new Error('timeout')); }, 8000);
+        pj.on('open', function () { clearTimeout(t); r.open = true; resolve(r); });
+        pj.on('error', function (e) {
+          if (!r.open) { clearTimeout(t); r.dead = true; reject(e); return; }
+          if (e && e.type === 'peer-unavailable') r.lastError = 'unavailable';
+        });
+        pj.on('disconnected', function () { if (!r.dead) { try { pj.reconnect(); } catch (e) {} } });
+        pj.on('close', function () { r.dead = true; r.open = false; });
+        pj.on('connection', onRelayConnection);
+      });
+    });
+    r.ready.catch(function () { r.dead = true; });
+    return r.ready;
+  }
+  // someone scanned our code (or joined the party)
+  function onRelayConnection(conn) {
+    var md = conn.metadata || {};
+    if (md.kind === 'guest' && !partyOn) { setTimeout(function () { try { conn.close(); } catch (e) {} }, 300); toast('Someone tried to join your party, but party mode is off.'); return; }
+    conn.on('open', function () { adoptConn(conn, 'answerer', md.name, md.kind === 'guest' ? 'guest' : 'device'); });
+  }
+  // turn a PeerJS connection into one of our peers (we use its data channel directly)
+  function adoptConn(conn, side, name, kind, extra) {
+    var peer = { id: randId(6), pc: conn.peerConnection, dc: null, name: name || 'Device', kind: kind, side: side, open: false, remoteState: null, incoming: null, conn: conn };
+    if (extra) Object.keys(extra).forEach(function (k) { peer[k] = extra[k]; });
+    peers.push(peer);
+    if (peer.pc) peer.pc.addEventListener('connectionstatechange', function () { if (peer.pc.connectionState === 'failed' || peer.pc.connectionState === 'closed') dropPeer(peer); });
+    attachChannel(peer, conn.dataChannel);
+    if (conn.dataChannel.readyState === 'open') conn.dataChannel.onopen();
+    return peer;
+  }
+  function relayDial(dst, name, kind, extra) {
+    return relayConnect().then(function (r) {
+      return new Promise(function (resolve) {
+        var conn = r.peer.connect(dst, { serialization: 'raw', reliable: true, metadata: { name: kind === 'guest' ? (settings.deviceName || 'Guest') : deviceName(), kind: kind } });
+        var done = false;
+        var t = setTimeout(function () { if (!done) { done = true; try { conn.close(); } catch (e) {} resolve(null); } }, 10000);
+        conn.on('open', function () { if (done) return; done = true; clearTimeout(t); resolve(adoptConn(conn, 'offerer', name, kind, extra)); });
+        conn.on('error', function () { if (!done) { done = true; clearTimeout(t); resolve(null); } });
+      });
+    });
+  }
+
+  /* ---------------- WebRTC peers ---------------- */
+  function newPeer(side, name, kind) {
+    var pc = new RTCPeerConnection({ iceServers: navigator.onLine === false ? [] : STUN });
+    var peer = { id: randId(6), pc: pc, dc: null, name: name || 'Device', kind: kind || 'device', side: side, open: false, remoteState: null, incoming: null };
+    peers.push(peer);
+    pc.onconnectionstatechange = function () {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') dropPeer(peer);
+    };
+    pc.ondatachannel = function (e) { attachChannel(peer, e.channel); };
+    return peer;
+  }
+  function waitIce(pc, ms) {
+    return new Promise(function (res) {
+      if (pc.iceGatheringState === 'complete') { res(); return; }
+      var t = setTimeout(res, ms || 3000);
+      pc.addEventListener('icegatheringstatechange', function () { if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); } });
+    });
+  }
+  async function makeOffer(peer) {
+    attachChannel(peer, peer.pc.createDataChannel('tunebox', { ordered: true }));
+    await peer.pc.setLocalDescription(await peer.pc.createOffer());
+    await waitIce(peer.pc, 2500);
+    return peer.pc.localDescription.sdp;
+  }
+  async function acceptOffer(peer, sdp) {
+    await peer.pc.setRemoteDescription({ type: 'offer', sdp: sdp });
+    await peer.pc.setLocalDescription(await peer.pc.createAnswer());
+    await waitIce(peer.pc, 2500);
+    return peer.pc.localDescription.sdp;
+  }
+  function dropPeer(peer) {
+    if (peers.indexOf(peer) < 0) return;
+    peers = peers.filter(function (x) { return x !== peer; });
+    try { peer.dc && peer.dc.close(); } catch (e) {}
+    try { peer.pc.close(); } catch (e) {}
+    try { peer.conn && peer.conn.close(); } catch (e) {}
+    if (remotePeer === peer) remotePeer = null;
+    if (peer.open) toast(peer.name + ' disconnected', 1800);
+    refreshConnectUi();
+  }
+  function attachChannel(peer, dc) {
+    peer.dc = dc;
+    dc.binaryType = 'arraybuffer';
+    dc.bufferedAmountLowThreshold = 1 << 20;
+    dc.onopen = function () {
+      peer.open = true;
+      send(peer, { t: 'hello', name: deviceName(), kind: peer.kind === 'guest' && peer.side === 'offerer' ? 'guest' : 'device', songs: state.tracks.length, party: partyOn });
+      if (peer.kind !== 'guest') pushSync(peer);
+      sendState(peer);
+      if (!(peer.kind === 'guest' && peer.side === 'answerer')) closeModal();
+      if ((peer.kind === 'guest' && peer.side === 'offerer') || peer.autoRemote) { remotePeer = peer; setView('remote'); }
+      toast('Connected to ' + peer.name, 2000);
+      refreshConnectUi();
+    };
+    dc.onclose = function () { dropPeer(peer); };
+    dc.onmessage = function (e) { onPeerMessage(peer, e.data); };
+  }
+  function send(peer, obj) {
+    if (peer && peer.dc && peer.dc.readyState === 'open') {
+      try { peer.dc.send(JSON.stringify(obj)); } catch (e) { /* channel busy */ }
+    }
+  }
+  function devicePeers() { return peers.filter(function (p) { return p.open && p.kind !== 'guest'; }); }
+
+  /* ---------------- packing codes for QR ---------------- */
+  // SDP is squeezed (deflate + base64url) so it fits in a QR code you can scan easily
+  async function packCode(obj) { return pack(obj); }
+  async function unpackCode(str) { return unpack(str); }
+  function joinLink(code) { return location.origin + location.pathname + '#join=' + code; }
+  function qrSvg(text, cell) {
+    try {
+      var q = window.qrcode(0, 'L');
+      q.addData(text);
+      q.make();
+      return q.createSvgTag({ cellSize: cell || 4, margin: 2, scalable: true });
+    } catch (e) { return ''; }
+  }
+
+  /* ---------------- pairing flows ---------------- */
+  // 1) This device shows a code; the other device scans it.
+  async function startHosting() {
+    var online = navigator.onLine !== false;
+    openModal('<h3>Connect a device</h3><p class="modal-sub">Getting a code ready…</p><div class="qr-wait"></div>', null, 'wide');
+    var relayOk = false;
+    if (online) { try { await relayConnect(); relayOk = true; } catch (e) { relayOk = false; } }
+    if (hostPending) { dropPeer(hostPending.peer); hostPending = null; }
+    var peer = newPeer('offerer', 'Device', 'device');
+    var sdp = await makeOffer(peer);
+    hostPending = { peer: peer };
+    var code = await packCode({ v: 1, o: sdp, r: relayOk ? relay.id : '', n: deviceName() });
+    var link = joinLink(code);
+    var svg = qrSvg(link, 3);
+    openModal('<h3>Connect a device</h3>' +
+      '<p class="modal-sub">On your phone or other computer, <b>scan this code with the camera</b> (or open Tunebox there → Connect → Scan). ' +
+      (relayOk ? 'Works on any network.' : 'You’re offline — that’s fine on the same Wi-Fi or hotspot; you’ll scan a code back.') + '</p>' +
+      (svg ? '<div class="qr big">' + svg + '</div>' : '<p class="modal-sub">This code is too long for a QR — use Copy link.</p>') +
+      '<div class="modal-actions wrap">' +
+        '<button class="btn" id="hostCopy">Copy link</button>' +
+        (navigator.share ? '<button class="btn" id="hostShare">Share…</button>' : '') +
+        '<button class="btn" id="hostScanBack">Scan their reply</button>' +
+        '<button class="btn" id="hostPaste">Paste reply</button>' +
+        '<span class="spacer"></span><button class="btn" data-close>Close</button>' +
+      '</div>',
+      function (m) {
+        m.querySelector('#hostCopy').addEventListener('click', function () { copyText(link); });
+        var sh = m.querySelector('#hostShare');
+        if (sh) sh.addEventListener('click', function () { navigator.share({ title: 'Connect to Tunebox', url: link }).catch(function () {}); });
+        m.querySelector('#hostScanBack').addEventListener('click', function () { openScanner(); });
+        m.querySelector('#hostPaste').addEventListener('click', function () { askText('Paste the reply code', '', 'Connect', handleCode); });
+      }, 'wide');
+  }
+  // 2) This device received a code (scanned, pasted or opened as a link).
+  async function handleCode(text) {
+    var m = /join=([A-Za-z0-9_-]+)/.exec(text) || /reply=([A-Za-z0-9_-]+)/.exec(text) || /^([zj][A-Za-z0-9_-]{20,})$/.exec(text.trim());
+    if (!m) { toast('That isn’t a Tunebox code.'); return; }
+    var data;
+    try { data = await unpackCode(m[1]); } catch (e) { toast('That code looks broken — try again.'); return; }
+    if (data.a) { // a reply to our own offline offer
+      if (!hostPending) { toast('Open “Connect a device” again, then scan the reply.'); return; }
+      hostPending.peer.name = data.n || 'Device';
+      hostPending.peer.pc.setRemoteDescription({ type: 'answer', sdp: data.a }).catch(function () { toast('Couldn’t connect with that reply.'); });
+      return;
+    }
+    if (data.party) { joinParty(data); return; }
+    if (!data.o) { toast('That isn’t a Tunebox code.'); return; }
+    openModal('<h3>Connecting to ' + esc(data.n || 'device') + '…</h3><p class="modal-sub">One moment.</p>', null);
+    // Prefer the relay when it's reachable: no second scan needed.
+    if (data.r && navigator.onLine !== false) {
+      try {
+        var p1 = await relayDial(data.r, data.n, 'device', { autoRemote: true });
+        if (p1) { if (hostPending) { dropPeer(hostPending.peer); hostPending = null; } return; }
+      } catch (e) { /* fall back to scanning a reply */ }
+    }
+    // Offline: answer their offer and show a reply code for them to scan.
+    var p2 = newPeer('answerer', data.n, 'device');
+    p2.autoRemote = true;
+    var ans = await acceptOffer(p2, data.o);
+    var reply = await packCode({ v: 1, a: ans, n: deviceName() });
+    var svg = qrSvg(reply, 3);
+    openModal('<h3>Almost there</h3><p class="modal-sub">On <b>' + esc(data.n || 'the other device') + '</b>, tap <b>Scan their reply</b> and point it at this code. (Or copy it and paste it there.)</p>' +
+      (svg ? '<div class="qr big">' + svg + '</div>' : '') +
+      '<div class="modal-actions"><button class="btn" id="replyCopy">Copy reply code</button><span class="spacer"></span><button class="btn" data-close>Close</button></div>',
+      function (mm) { mm.querySelector('#replyCopy').addEventListener('click', function () { copyText(reply); }); }, 'wide');
+  }
+  function waitOpen(peer, ms) {
+    return new Promise(function (res) {
+      var t0 = Date.now();
+      (function check() {
+        if (peer.open) { res(true); return; }
+        if (Date.now() - t0 > ms || peers.indexOf(peer) < 0) { res(false); return; }
+        setTimeout(check, 200);
+      })();
+    });
+  }
+  function copyText(s) {
+    (navigator.clipboard ? navigator.clipboard.writeText(s) : Promise.reject()).then(function () { toast('Copied', 1200); }, function () { prompt('Copy this:', s); });
+  }
+
+  /* ---------------- party mode ---------------- */
+  async function startParty() {
+    try { await relayConnect(); } catch (e) { toast('Party mode needs internet on this device (so guests can find it).', 3500); return; }
+    partyOn = true;
+    var code = await packCode({ v: 1, party: 1, r: relay.id, n: deviceName() });
+    var link = joinLink(code);
+    openModal('<h3>🎉 Party mode is on</h3><p class="modal-sub">Friends scan this to add songs to your queue from their phones — no app needed.</p>' +
+      '<div class="qr big">' + qrSvg(link, 3) + '</div>' +
+      '<div class="modal-actions wrap"><button class="btn" id="partyCopy">Copy link</button><button class="btn" id="partyStop">End party</button><span class="spacer"></span><button class="btn primary" data-close>Done</button></div>',
+      function (m) {
+        m.querySelector('#partyCopy').addEventListener('click', function () { copyText(link); });
+        m.querySelector('#partyStop').addEventListener('click', function () { stopParty(); closeModal(); });
+      }, 'wide');
+    refreshConnectUi();
+  }
+  function stopParty() {
+    partyOn = false;
+    peers.filter(function (p) { return p.kind === 'guest'; }).forEach(function (p) { send(p, { t: 'bye' }); dropPeer(p); });
+    toast('Party ended', 1400);
+    refreshConnectUi();
+  }
+  async function joinParty(data) {
+    openModal('<h3>Joining ' + esc(data.n || 'the party') + '…</h3><p class="modal-sub">One moment.</p>', null);
+    try {
+      var p = await relayDial(data.r, data.n, 'guest');
+      if (!p) { closeModal(); toast('Couldn’t reach the party. Is party mode still on?', 3000); }
+    } catch (e) { closeModal(); toast('Joining a party needs internet.', 3000); }
+  }
+
+  /* ---------------- messages ---------------- */
+  var FILE_CHUNK = 64 * 1024;
+  function onPeerMessage(peer, data) {
+    if (typeof data !== 'string') { receiveChunk(peer, data); return; }
+    var msg;
+    try { msg = JSON.parse(data); } catch (e) { return; }
+    var trusted = peer.kind !== 'guest';
+    switch (msg.t) {
+      case 'hello':
+        peer.name = msg.name || peer.name;
+        peer.songs = msg.songs;
+        if (msg.kind === 'guest') peer.kind = 'guest';
+        refreshConnectUi();
+        break;
+      case 'state':
+        peer.remoteState = msg.s;
+        if (remotePeer === peer && state.view === 'remote') renderRemote();
+        break;
+      case 'cmd':
+        if (!trusted && !(settings.guestControl && ['toggle', 'next'].indexOf(msg.c) >= 0)) return;
+        runRemoteCmd(msg);
+        break;
+      case 'lib':
+        send(peer, { t: 'libres', q: msg.q, items: searchForRemote(msg.q || '', msg.limit || 60) });
+        break;
+      case 'libres':
+        if (remotePeer === peer) { peer.libResults = msg.items; renderRemoteLib(); }
+        break;
+      case 'play':
+        if (!trusted) return;
+        var tp = state.byId.get(msg.id);
+        if (tp) { var all = state.tracks.slice().sort(defaultOrder).map(function (x) { return x.id; }); playIds(all, all.indexOf(tp.id)); }
+        break;
+      case 'addq':
+        var tq = state.byId.get(msg.id);
+        if (!tq) return;
+        queueInsert([tq.id], !!msg.next && trusted);
+        if (!trusted) toast((peer.name || 'A guest') + ' added “' + tq.title + '”', 2600);
+        send(peer, { t: 'ok', msg: 'Added “' + tq.title + '” to the queue' });
+        break;
+      case 'ok':
+        toast(msg.msg, 1800);
+        break;
+      case 'sync':
+        if (!trusted || settings.liveSync === false) return;
+        syncMuted = true;
+        try { applyPayload(msg.p, true); } finally { syncMuted = false; }
+        break;
+      case 'file-start':
+        if (!trusted) return;
+        peer.incoming = { id: msg.id, name: msg.name, type: msg.type, size: msg.size, got: 0, parts: [], idx: msg.idx, total: msg.total };
+        updateTransfer(peer.name, msg.name, 0, msg.idx, msg.total, 'in');
+        break;
+      case 'file-end':
+        finishIncoming(peer);
+        break;
+      case 'bye':
+        dropPeer(peer);
+        break;
+    }
+  }
+  function runRemoteCmd(msg) {
+    switch (msg.c) {
+      case 'toggle': toggle(); break;
+      case 'next': next(false); break;
+      case 'prev': prev(); break;
+      case 'seek': if (audio.duration) audio.currentTime = Math.max(0, Math.min(audio.duration, msg.v)); break;
+      case 'vol': setVolume(msg.v); break;
+      case 'dj': toggleDj(); break;
+      case 'shuffle': toggleShuffle(); break;
+      case 'fav': toggleFav(); break;
+    }
+    broadcastStateSoon();
+  }
+  function searchForRemote(q, limit) {
+    var tm = q.toLowerCase().split(/\s+/).filter(Boolean);
+    var out = [];
+    var list = tm.length ? state.tracks : state.tracks.slice().sort(defaultOrder);
+    for (var i = 0; i < list.length && out.length < limit; i++) {
+      var t = list[i];
+      if (tm.length && !matches(t, tm)) continue;
+      out.push({ id: t.id, title: t.title, artist: t.artist, album: t.album, d: Math.round(t.duration || 0) });
+    }
+    return out;
+  }
+
+  /* ---------------- sharing what's playing ---------------- */
+  var thumbCache = {};
+  function smallCover(t) {
+    if (!t) return Promise.resolve('');
+    if (thumbCache[t.albumKey] !== undefined) return Promise.resolve(thumbCache[t.albumKey]);
+    return getCover(t).then(function (c) {
+      if (!c || !c.url) { thumbCache[t.albumKey] = ''; return ''; }
+      return new Promise(function (res) {
+        var img = new Image();
+        img.onload = function () {
+          var cv = document.createElement('canvas');
+          cv.width = cv.height = 160;
+          cv.getContext('2d').drawImage(img, 0, 0, 160, 160);
+          var u = '';
+          try { u = cv.toDataURL('image/jpeg', 0.72); } catch (e) { u = ''; }
+          thumbCache[t.albumKey] = u;
+          res(u);
+        };
+        img.onerror = function () { thumbCache[t.albumKey] = ''; res(''); };
+        img.src = c.url;
+      });
+    });
+  }
+  function nowState() {
+    var t = state.current;
+    return {
+      t: t ? { id: t.id, title: t.title, artist: t.artist, album: t.album } : null,
+      pos: audio.currentTime || 0, dur: audio.duration || (t && t.duration) || 0,
+      playing: !audio.paused, vol: muted ? 0 : vol, dj: !!settings.dj, shuffle: state.shuffle,
+      fav: !!(t && isFav(t)), name: deviceName(), guestControl: isOn('guestControl'),
+      next: state.queue.slice(state.qIndex + 1, state.qIndex + 6).map(function (id) { var x = state.byId.get(id); return x ? { title: x.title, artist: x.artist } : null; }).filter(Boolean)
+    };
+  }
+  function sendState(peer) {
+    var s = nowState();
+    smallCover(state.current).then(function (cov) { s.cover = cov; send(peer, { t: 'state', s: s }); });
+  }
+  var broadcastStateSoon = throttle(function () { peers.forEach(function (p) { if (p.open) sendState(p); }); }, 700);
+  setInterval(function () { if (peers.some(function (p) { return p.open; })) broadcastStateSoon(); }, 3000);
+  ['play', 'pause', 'seeked', 'volumechange'].forEach(function (ev) { decks.forEach(function (d) { d.addEventListener(ev, function () { if (this === audio) broadcastStateSoon(); }); }); });
+
+  /* ---------------- live sync (playlists, favourites, settings) ---------------- */
+  function pushSync(peer) {
+    if (settings.liveSync === false || syncMuted) return;
+    var p = syncPayload(false);
+    (peer ? [peer] : devicePeers()).forEach(function (x) { send(x, { t: 'sync', p: p }); });
+  }
+  var lastSyncSent = '';
+  var pushSyncDeb = debounce(function () {
+    var j = JSON.stringify(syncPayload(false));
+    if (j === lastSyncSent) return;
+    lastSyncSent = j;
+    pushSync();
+  }, 1500);
+  function pushSyncSoon() { if (!syncMuted) pushSyncDeb(); }
+
+  /* ---------------- sending songs ---------------- */
+  var sendQueue = [], sending = false;
+  function sendTracks(peer, list) {
+    if (!peer || !peer.open) { toast('Connect a device first.'); return; }
+    list.forEach(function (t) { sendQueue.push({ peer: peer, file: t.file || t, name: (t.file ? t.file.name : t.name) }); });
+    toast('Sending ' + plural(list.length, 'song') + ' to ' + peer.name + '…', 2000);
+    pumpSend();
+  }
+  async function pumpSend() {
+    if (sending) return;
+    sending = true;
+    var total = sendQueue.length, idx = 0;
+    while (sendQueue.length) {
+      var job = sendQueue.shift();
+      idx++;
+      var dc = job.peer.dc;
+      if (!dc || dc.readyState !== 'open') continue;
+      var id = randId(6), f = job.file;
+      send(job.peer, { t: 'file-start', id: id, name: job.name, type: f.type, size: f.size, idx: idx, total: total + sendQueue.length });
+      for (var off = 0; off < f.size; off += FILE_CHUNK) {
+        if (dc.readyState !== 'open') break;
+        if (dc.bufferedAmount > 4 * (1 << 20)) {
+          await new Promise(function (res) { dc.onbufferedamountlow = function () { dc.onbufferedamountlow = null; res(); }; });
+        }
+        var chunk = await readAB(f.slice(off, Math.min(f.size, off + FILE_CHUNK)));
+        try { dc.send(chunk); } catch (e) { await new Promise(function (r) { setTimeout(r, 50); }); off -= FILE_CHUNK; continue; }
+        if ((off / FILE_CHUNK) % 32 === 0) updateTransfer(job.peer.name, job.name, off / f.size, idx, total, 'out');
+      }
+      send(job.peer, { t: 'file-end', id: id });
+      updateTransfer(job.peer.name, job.name, 1, idx, total, 'out');
+    }
+    sending = false;
+    toast('Sent ✓', 1500);
+  }
+  function receiveChunk(peer, buf) {
+    var inc = peer.incoming;
+    if (!inc) return;
+    inc.parts.push(buf);
+    inc.got += buf.byteLength;
+    if (inc.parts.length % 32 === 0) updateTransfer(peer.name, inc.name, inc.got / inc.size, inc.idx, inc.total, 'in');
+  }
+  var receivedBatch = [], receivedFlush = debounce(function () {
+    var batch = receivedBatch;
+    receivedBatch = [];
+    ingest(batch, 'Received');
+    storeFiles(batch);
+  }, 800);
+  function finishIncoming(peer) {
+    var inc = peer.incoming;
+    peer.incoming = null;
+    if (!inc) return;
+    var f;
+    try { f = new File(inc.parts, inc.name, { type: inc.type }); } catch (e) { f = new Blob(inc.parts, { type: inc.type }); f.name = inc.name; }
+    receivedBatch.push({ file: f, path: 'Received/' + inc.name });
+    updateTransfer(peer.name, inc.name, 1, inc.idx, inc.total, 'in');
+    receivedFlush();
+  }
+  var transfers = {};
+  function updateTransfer(who, name, frac, idx, total, dir) {
+    transfers[dir + who] = { who: who, name: name, frac: frac, idx: idx, total: total, dir: dir, at: Date.now() };
+    if (state.view === 'connect') renderConnectTransfers();
+  }
+  function pickAndSend(peer) {
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.multiple = true;
+    inp.accept = 'audio/*,.mp3,.m4a,.flac,.wav,.ogg,.opus,.aac,.lrc';
+    inp.onchange = function () { sendTracks(peer, Array.prototype.slice.call(inp.files)); };
+    inp.click();
+  }
+
+  /* ---------------- QR scanner ---------------- */
+  var scanStream = null;
+  function loadJsQR() {
+    if (window.jsQR) return Promise.resolve();
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = 'js/vendor/jsqr.js';
+      s.onload = res;
+      s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  async function openScanner() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      askText('Paste the code or link', '', 'Connect', handleCode);
+      return;
+    }
+    openModal('<h3>Scan a Tunebox code</h3><p class="modal-sub">Point your camera at the QR code on the other device.</p>' +
+      '<div class="scan-box"><video id="scanVideo" playsinline muted></video><div class="scan-frame"></div></div>' +
+      '<div class="modal-actions"><button class="btn" id="scanPaste">Paste instead</button><span class="spacer"></span><button class="btn" data-close>Cancel</button></div>',
+      function (m) {
+        m.querySelector('#scanPaste').addEventListener('click', function () { closeModal(); askText('Paste the code or link', '', 'Connect', handleCode); });
+        startScan(m.querySelector('#scanVideo'));
+        return stopScan;
+      }, 'wide');
+  }
+  async function startScan(video) {
+    try {
+      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    } catch (e) {
+      closeModal();
+      toast('Camera not available — paste the code instead.', 2600);
+      askText('Paste the code or link', '', 'Connect', handleCode);
+      return;
+    }
+    video.srcObject = scanStream;
+    await video.play().catch(function () {});
+    var detector = null;
+    if ('BarcodeDetector' in window) { try { detector = new window.BarcodeDetector({ formats: ['qr_code'] }); } catch (e) { detector = null; } }
+    if (!detector) { try { await loadJsQR(); } catch (e) { /* no decoder */ } }
+    var cv = document.createElement('canvas'), ctx = cv.getContext('2d');
+    var busy = false;
+    var timer = setInterval(async function () {
+      if (!scanStream) { clearInterval(timer); return; }
+      if (busy || video.readyState < 2) return;
+      busy = true;
+      try {
+        var text = '';
+        if (detector) {
+          var codes = await detector.detect(video);
+          if (codes.length) text = codes[0].rawValue;
+        } else if (window.jsQR) {
+          var w = video.videoWidth, h = video.videoHeight, sc = Math.min(1, 640 / Math.max(w, h));
+          cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
+          ctx.drawImage(video, 0, 0, cv.width, cv.height);
+          var img = ctx.getImageData(0, 0, cv.width, cv.height);
+          var r = window.jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+          if (r) text = r.data;
+        }
+        if (text) { clearInterval(timer); closeModal(); handleCode(text); }
+      } catch (e) { /* keep trying */ }
+      busy = false;
+    }, 250);
+  }
+  function stopScan() {
+    if (scanStream) { scanStream.getTracks().forEach(function (t) { t.stop(); }); scanStream = null; }
+  }
+
+  /* ---------------- Connect page ---------------- */
+  function refreshConnectUi() {
+    var n = peers.filter(function (p) { return p.open; }).length;
+    $$('.conn-count').forEach(function (el) { el.textContent = n ? n : ''; });
+    document.body.classList.toggle('has-peers', n > 0);
+    if (state.view === 'connect') renderConnect();
+    if (state.view === 'remote' && (!remotePeer || !remotePeer.open)) setView('connect');
+  }
+  function renderConnect() {
+    var v = $('connectView');
+    var open = peers.filter(function (p) { return p.open; });
+    v.innerHTML =
+      '<div class="conn-actions">' +
+        '<button class="conn-big" data-cc="host"><b>Show my code</b><span>Let another device connect to this one</span></button>' +
+        '<button class="conn-big" data-cc="scan"><b>Scan a code</b><span>Connect to a device showing a code</span></button>' +
+        '<button class="conn-big party' + (partyOn ? ' on' : '') + '" data-cc="party"><b>' + (partyOn ? '🎉 Party is on' : 'Party mode') + '</b><span>' + (partyOn ? 'Show the code again or end it' : 'Friends add songs from their phones') + '</span></button>' +
+      '</div>' +
+      '<section class="set-card"><div class="set-card-head"><h3>Connected</h3><p>' + (open.length ? plural(open.length, 'device') : 'Nothing connected yet') + ' · this device is “' + esc(deviceName()) + '”</p></div>' +
+        open.map(function (p) {
+          var guest = p.kind === 'guest';
+          return '<div class="set-row"><div class="set-text"><div class="set-title">' + esc(p.name) + (guest ? ' <em class="tag">guest</em>' : '') + '</div>' +
+            '<div class="set-desc">' + (p.remoteState && p.remoteState.t ? 'Playing: ' + esc(p.remoteState.t.title) : (p.songs ? plural(p.songs, 'song') : 'Connected')) + '</div></div>' +
+            '<div class="set-ctl conn-btns">' +
+              (guest ? '' : sBtn('Control', 'data-cc="remote" data-p="' + p.id + '"', true) + sBtn('Send songs', 'data-cc="send" data-p="' + p.id + '"')) +
+              sBtn('Disconnect', 'data-cc="drop" data-p="' + p.id + '"') +
+            '</div></div>';
+        }).join('') +
+      '</section>' +
+      '<section class="set-card"><div class="set-card-head"><h3>Transfers</h3></div><div id="connTransfers"></div></section>' +
+      '<section class="set-card"><div class="set-card-head"><h3>Options</h3></div>' +
+        sRow('This device’s name', esc(deviceName()), sBtn('Rename', 'data-cc="rename"')) +
+        sRow('Live sync', 'Keep playlists, favourites and your sound the same on connected devices.', sSwitch('liveSync')) +
+        sRow('Party guests can play / skip', 'Otherwise guests can only add songs to the queue.', sSwitch('guestControl')) +
+        sRow('How it works', 'Devices connect directly and encrypted. Codes work offline over the same Wi-Fi or a phone hotspot. When online, a free relay (PeerJS) just introduces the devices — your music never goes through it.', '', 'wide') +
+      '</section>';
+    renderConnectTransfers();
+  }
+  function renderConnectTransfers() {
+    var el = $('connTransfers');
+    if (!el) return;
+    var list = Object.keys(transfers).map(function (k) { return transfers[k]; }).filter(function (x) { return Date.now() - x.at < 10 * 60000; });
+    el.innerHTML = list.length ? list.map(function (x) {
+      return '<div class="bar-row"><span>' + (x.dir === 'in' ? '⬇ ' : '⬆ ') + esc(x.name) + '</span><div class="bar"><i style="width:' + Math.round(x.frac * 100) + '%"></i></div><em>' + x.idx + '/' + x.total + '</em></div>';
+    }).join('') : '<p class="insp-empty">Songs you send or receive show up here.</p>';
+  }
+  $('connectView').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-cc]');
+    if (!b) {
+      var tg = e.target.closest('[data-toggle]');
+      if (tg) { var k = tg.getAttribute('data-toggle'); settings[k] = !isOn(k); saveSettings(); renderConnect(); if (k === 'liveSync' && settings.liveSync) pushSync(); }
+      return;
+    }
+    var act = b.getAttribute('data-cc'), peer = peers.filter(function (x) { return x.id === b.getAttribute('data-p'); })[0];
+    if (act === 'host') startHosting();
+    else if (act === 'scan') openScanner();
+    else if (act === 'party') { if (partyOn) startParty(); else startParty(); }
+    else if (act === 'remote' && peer) { remotePeer = peer; setView('remote'); }
+    else if (act === 'send' && peer) openSendDialog(peer);
+    else if (act === 'drop' && peer) { send(peer, { t: 'bye' }); dropPeer(peer); }
+    else if (act === 'rename') askText('Name this device', deviceName(), 'Save', function (n) { settings.deviceName = n; saveSettings(); renderConnect(); devicePeers().forEach(function (p) { send(p, { t: 'hello', name: n, songs: state.tracks.length }); }); });
+  });
+  function openSendDialog(peer) {
+    var cur = state.current, al = cur ? getAlbums().filter(function (a) { return a.key === cur.albumKey; })[0] : null;
+    openModal('<h3>Send songs to ' + esc(peer.name) + '</h3><p class="modal-sub">Songs go straight to the other device and are saved there. Nothing goes through the internet when you’re on the same Wi-Fi or hotspot.</p>' +
+      '<div class="opt-grid">' +
+        (cur ? '<button class="opt" data-send="song">This song<br><small>' + esc(cur.title) + '</small></button>' : '') +
+        (al ? '<button class="opt" data-send="album">This album<br><small>' + plural(al.tracks.length, 'song') + '</small></button>' : '') +
+        (state.view === 'playlist' || state.view === 'album' || state.view === 'favorites' ? '<button class="opt" data-send="view">Songs on this page<br><small>' + plural(getList().length, 'song') + '</small></button>' : '') +
+        '<button class="opt" data-send="favs">My favourites<br><small>' + plural(state.tracks.filter(isFav).length, 'song') + '</small></button>' +
+        '<button class="opt" data-send="pick">Choose files…</button>' +
+      '</div><div class="modal-actions"><button class="btn" data-close>Close</button></div>',
+      function (m) {
+        m.addEventListener('click', function (e) {
+          var b = e.target.closest('[data-send]');
+          if (!b) return;
+          var k = b.getAttribute('data-send'), list = [];
+          if (k === 'song') list = [cur];
+          else if (k === 'album') list = al.tracks;
+          else if (k === 'view') list = getList().map(function (id) { return state.byId.get(id); });
+          else if (k === 'favs') list = state.tracks.filter(isFav);
+          else if (k === 'pick') { closeModal(); pickAndSend(peer); return; }
+          closeModal();
+          if (list.length) sendTracks(peer, list.filter(Boolean));
+        });
+      });
+  }
+
+  /* ---------------- Remote page (control another device) ---------------- */
+  var remoteSearch = '';
+  function rcmd(c, v) { send(remotePeer, { t: 'cmd', c: c, v: v }); }
+  function renderRemote() {
+    var v = $('remoteView'), p = remotePeer;
+    if (!p) return;
+    var s = p.remoteState || {}, t = s.t, guest = p.kind === 'guest';
+    var pct = s.dur ? (s.pos / s.dur) * 100 : 0;
+    if (!v.querySelector('.remote-card')) {
+      v.innerHTML = '<div class="remote-card glass">' +
+          '<div class="remote-art cover" id="rArt"></div>' +
+          '<div class="remote-side"><div class="eyebrow" id="rWho"></div><div class="remote-title" id="rTitle"></div><div class="remote-sub" id="rSub"></div>' +
+            '<div class="remote-bar"><i id="rBar"></i></div>' +
+            '<div class="buttons big" id="rBtns">' +
+              '<button class="icon-btn" data-rc="prev">' + '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>' +
+              '<button class="play-btn" data-rc="toggle" id="rPlay"></button>' +
+              '<button class="icon-btn" data-rc="next"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6zm10-12v12h2V6z"/></svg></button>' +
+            '</div>' +
+            '<div class="remote-extra" id="rExtra"><button class="chip-btn" data-rc="dj">✦ DJ</button><button class="chip-btn" data-rc="shuffle">Shuffle</button><button class="chip-btn" data-rc="fav">♥ Like</button></div>' +
+            '<div class="vol-row" id="rVolRow"><span>🔈</span><input type="range" class="range" id="rVol" min="0" max="1" step="0.01"><span>🔊</span></div>' +
+          '</div></div>' +
+        '<div class="remote-next" id="rNext"></div>' +
+        '<section class="set-card remote-lib"><div class="set-card-head"><h3>' + (guest ? 'Add a song to the party' : 'Their library') + '</h3></div>' +
+          '<label class="search remote-search"><input id="rSearch" type="search" placeholder="Search ' + esc(p.name) + '’s songs" autocomplete="off"></label>' +
+          '<div id="rLib"><p class="insp-empty">Loading…</p></div></section>';
+      v.querySelector('#rSearch').value = remoteSearch;
+      v.querySelector('#rSearch').addEventListener('input', debounce(function () { remoteSearch = v.querySelector('#rSearch').value; send(remotePeer, { t: 'lib', q: remoteSearch }); }, 250));
+      v.querySelector('#rVol').addEventListener('input', function () { rcmd('vol', +this.value); });
+      send(p, { t: 'lib', q: remoteSearch });
+    }
+    var g = guest && !(s.guestControl);
+    $('rWho').textContent = (guest ? 'Party at ' : 'Controlling ') + (s.name || p.name);
+    $('rTitle').textContent = t ? t.title : 'Nothing playing';
+    $('rSub').textContent = t ? t.artist + ' — ' + t.album : '';
+    $('rBar').style.width = pct.toFixed(1) + '%';
+    $('rPlay').innerHTML = s.playing ? ICON_PAUSE : ICON_PLAY;
+    $('rArt').innerHTML = s.cover ? '<img alt="" src="' + s.cover + '">' : '<div class="ph" style="' + placeholderStyle(t ? t.album : 'x') + '">' + ICON_NOTE + '</div>';
+    $('rExtra').hidden = guest;
+    $('rVolRow').hidden = guest;
+    $('rBtns').classList.toggle('dim', g);
+    if (!guest && document.activeElement !== $('rVol')) { $('rVol').value = s.vol || 0; $('rVol').style.setProperty('--p', ((s.vol || 0) * 100) + '%'); }
+    $$('#rExtra [data-rc="dj"]').forEach(function (b) { b.classList.toggle('on', !!s.dj); });
+    $$('#rExtra [data-rc="shuffle"]').forEach(function (b) { b.classList.toggle('on', !!s.shuffle); });
+    $$('#rExtra [data-rc="fav"]').forEach(function (b) { b.classList.toggle('on', !!s.fav); });
+    $('rNext').innerHTML = s.next && s.next.length ? 'Up next: ' + s.next.map(function (x) { return '<b>' + esc(x.title) + '</b>'; }).join(' · ') : '';
+  }
+  function renderRemoteLib() {
+    var el = $('rLib'), p = remotePeer;
+    if (!el || !p) return;
+    var items = p.libResults || [], guest = p.kind === 'guest';
+    el.innerHTML = items.length ? items.map(function (it) {
+      return '<div class="rlib-row"><div class="tt"><div class="t1">' + esc(it.title) + '</div><div class="t2">' + esc(it.artist) + ' · ' + esc(it.album) + '</div></div>' +
+        (guest ? '' : '<button class="btn small" data-rplay="' + it.id + '">Play</button>') +
+        '<button class="btn small' + (guest ? ' primary' : '') + '" data-rq="' + it.id + '">' + (guest ? '+ Add' : 'Queue') + '</button></div>';
+    }).join('') : '<p class="insp-empty">No songs found.</p>';
+  }
+  $('remoteView').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-rc]');
+    if (b) { rcmd(b.getAttribute('data-rc')); return; }
+    var pl = e.target.closest('[data-rplay]');
+    if (pl) { send(remotePeer, { t: 'play', id: +pl.getAttribute('data-rplay') }); return; }
+    var q = e.target.closest('[data-rq]');
+    if (q) { send(remotePeer, { t: 'addq', id: +q.getAttribute('data-rq') }); q.textContent = '✓'; }
+  });
+
+  // incoming #join= links (scanned with the phone camera)
+  function receiveJoin() {
+    var m = /#join=([A-Za-z0-9_-]+)/.exec(location.hash);
+    if (!m) return;
+    try { window.history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    handleCode('join=' + m[1]);
+  }
+
 
   /* ------------------------------ events ------------------------------ */
 
   var COMMANDS = {
     'open-folder': openFolder,
     'add-files': function () { $('fileInput').click(); },
+    'rescan': function () { rescanFolders(false); },
     toggle: toggle,
     next: function () { next(false); },
     prev: prev,
@@ -3414,7 +4397,10 @@
 
   $('dirInput').addEventListener('change', function () {
     var r = filesFromInput(this);
-    ingest(r.entries, r.root);
+    var fresh = r.entries.filter(function (e) { return !state.byPath.has(e.path); });
+    var again = r.root && state.folders.indexOf(r.root) >= 0;
+    ingest(r.entries, r.root, { rescan: again });
+    if (IS_PHONE) storeFiles(fresh); // phones can't re-open a folder later, so keep the songs
     this.value = '';
   });
   $('fileInput').addEventListener('change', function () {
@@ -3645,9 +4631,13 @@
   /* ------------------------------ start ------------------------------ */
 
   if (IS_IOS || (IS_ANDROID && !window.showDirectoryPicker)) {
-    $('btnEmptyOpen').textContent = 'Choose songs';
-    $('btnEmptyOpen').nextElementSibling.hidden = true;
-    $('emptyHint').textContent = 'Pick songs from the Files app — select several at once. They play right here, nothing is uploaded.';
+    if (IS_IOS) {
+      $('btnEmptyOpen').textContent = 'Choose songs';
+      $('btnEmptyOpen').nextElementSibling.hidden = true;
+      $('emptyHint').textContent = 'Pick songs from the Files app — select several at once. They play right here, nothing is uploaded.';
+    } else {
+      $('emptyHint').textContent = 'Choose your Music or Download folder to add everything in it, or pick single songs. Nothing is uploaded. Use “Check for new songs” later to add new ones.';
+    }
   }
 
   updateVolume();
@@ -3672,12 +4662,17 @@
     receiveSync();
   });
 
+  receiveJoin();
+  window.addEventListener('hashchange', receiveJoin);
+
   // exposed for debugging in the console
   window.Tunebox = {
     state: state, settings: settings,
     get audio() { return audio; },
     get graph() { return !!ac; },
     get fading() { return !!fade; },
-    get gain() { return deckGains ? deckGains[active].gain.value : null; }
+    get gain() { return deckGains ? deckGains[active].gain.value : null; },
+    debugScan: function (h) { return scanHandle(h); },
+    connect: { get peers() { return peers; }, handleCode: handleCode, startHosting: startHosting, startParty: startParty, sendTracks: sendTracks, get remote() { return remotePeer; } }
   };
 })();
