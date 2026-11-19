@@ -12,6 +12,8 @@
     ['#ec6ead', '#7650c9'], ['#43cea2', '#185a9d'], ['#ff6e7f', '#bf5ae0'], ['#c79a5b', '#7a4b2a']
   ];
   var IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var IS_ANDROID = /Android/i.test(navigator.userAgent);
+  var IS_PHONE = IS_IOS || IS_ANDROID;
 
   var ICON_NOTE = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>';
   var ICON_PLAY = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.1v13.8a1 1 0 0 0 1.5.8l10.8-6.9a1 1 0 0 0 0-1.6L9.5 4.3A1 1 0 0 0 8 5.1"/></svg>';
@@ -942,23 +944,33 @@
   applyRate();
 
   // smooth gain changes on one deck (needs Web Audio; otherwise falls back to element volume)
+  // We track each deck's level ourselves: reading gain.value right after scheduling a change
+  // returns the old value, which made the incoming song fade *down* to silence (the "next song
+  // plays but you can't hear it" bug).
+  var deckLevel = [1, 1];
   function rampDeck(idx, target, secs, curve) {
     if (!deckGains) return;
-    var g = deckGains[idx].gain, now = ac.currentTime;
+    var g = deckGains[idx].gain, now = ac.currentTime, from = deckLevel[idx];
+    deckLevel[idx] = target;
     g.cancelScheduledValues(now);
-    if (!secs) { g.setValueAtTime(target, now); return; }
-    var from = g.value;
+    if (!secs || from === target) { g.setValueAtTime(target, now); return; }
     if (curve && g.setValueCurveAtTime) {
       var n = 64, arr = new Float32Array(n);
       for (var i = 0; i < n; i++) {
         var x = i / (n - 1);
-        // equal-power curve keeps the loudness steady through the fade
-        arr[i] = target > from ? Math.sin(x * Math.PI / 2) * target : Math.cos(x * Math.PI / 2) * from;
+        // equal-power curves keep the loudness steady through the blend
+        arr[i] = target > from ? from + (target - from) * Math.sin(x * Math.PI / 2)
+                               : target + (from - target) * Math.cos(x * Math.PI / 2);
       }
-      try { g.setValueCurveAtTime(arr, now, secs); return; } catch (e) { /* fall through */ }
+      try { g.setValueCurveAtTime(arr, now, secs); return; } catch (e) { g.cancelScheduledValues(now); }
     }
     g.setValueAtTime(from, now);
     g.linearRampToValueAtTime(target, now + secs);
+  }
+  // safety net: whenever the active deck is playing and no blend is running, it must be audible
+  function ensureAudible() {
+    if (!deckGains || fade || pauseTimer) return;
+    if (deckLevel[active] < 1 || deckGains[active].gain.value < 0.5) rampDeck(active, 1, 0.15);
   }
 
   function cancelFade() {
@@ -978,7 +990,17 @@
     decks[idx].defaultPlaybackRate = speed();
   }
 
+  function notifyTrack(t) {
+    if (!settings.notify || !document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return;
+    var opts = { body: t.artist + ' — ' + t.album, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'tunebox-now', silent: true, renotify: false };
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready.then(function (reg) { reg.showNotification(t.title, opts); }).catch(function () {});
+    } else {
+      try { new Notification(t.title, opts); } catch (e) { /* not allowed here */ }
+    }
+  }
   function trackStarted(t, prev) {
+    notifyTrack(t);
     if (prev && prev !== t) finishStats(prev);
     beginStats(t);
     state.current = t;
@@ -1060,6 +1082,7 @@
     }
     ensureAudioGraph();
     if (ac && ac.state === 'suspended') ac.resume();
+    if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
     if (deckGains && settings.softPause !== false && audio.paused) { rampDeck(active, 0, 0); rampDeck(active, 1, 0.25); }
     var p = audio.play();
     if (p && p.catch) p.catch(function (e) { if (e && e.name === 'NotAllowedError') toast('Press play to start.'); });
@@ -1071,7 +1094,8 @@
       rampDeck(active, 0, 0.2);
       clearTimeout(pauseTimer);
       var d = audio;
-      pauseTimer = setTimeout(function () { d.pause(); rampDeck(active, 1, 0); }, 220);
+      var di = active;
+      pauseTimer = setTimeout(function () { pauseTimer = null; d.pause(); rampDeck(di, 1, 0); }, 220);
       document.body.classList.remove('is-playing');
       return;
     }
@@ -1159,6 +1183,7 @@
 
   function setPlayingClass() {
     document.body.classList.toggle('is-playing', !audio.paused);
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing'; } catch (e) { /* ignore */ } }
     startViz();
   }
 
@@ -1177,7 +1202,12 @@
   decks.forEach(function (d) {
     d.addEventListener('play', function () { if (this === audio) setPlayingClass(); });
     d.addEventListener('pause', function () { if (this === audio) setPlayingClass(); });
-    d.addEventListener('playing', function () { if (this === audio) errorStreak = 0; });
+    d.addEventListener('playing', function () {
+      if (this !== audio) return;
+      errorStreak = 0;
+      if (ac && ac.state === 'suspended') ac.resume();
+      ensureAudible();
+    });
     d.addEventListener('ended', function () { if (this === audio) next(true); });
     d.addEventListener('loadedmetadata', function () {
       if (this !== audio) return;
@@ -1189,7 +1219,7 @@
     });
     d.addEventListener('timeupdate', function () {
       if (this !== audio) return;
-      updateTime(); updateLyricHighlight(); sampleStats(); maybeAutoCrossfade(); saveLastSoon();
+      updateTime(); updateLyricHighlight(); sampleStats(); ensureAudible(); maybeAutoCrossfade(); saveLastSoon();
     });
     d.addEventListener('seeked', function () { if (this === audio) { lyricIdx = -1; updateLyricHighlight(); } });
     d.addEventListener('error', function () {
@@ -1499,7 +1529,7 @@
 
   // decks -> volume boost -> 10-band EQ -> (dry + reverb) -> limiter -> visualizer -> speakers
   function ensureAudioGraph() {
-    if (ac || IS_IOS) return;
+    if (ac || IS_IOS || settings.webAudio === false) return;
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     try {
@@ -1678,7 +1708,10 @@
     }
     requestAnimationFrame(drawViz);
   }
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) startViz(); });
+  document.addEventListener('visibilitychange', function () {
+    if (ac && ac.state !== 'running' && !audio.paused) ac.resume();
+    if (!document.hidden) startViz();
+  });
 
   /* ---------------- theme ---------------- */
   function applyTheme() {
@@ -1876,7 +1909,8 @@
       previoustrack: prev, nexttrack: function () { next(false); },
       seekbackward: function () { audio.currentTime = Math.max(0, audio.currentTime - 10); },
       seekforward: function () { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10); },
-      seekto: function (d) { if (d && typeof d.seekTime === 'number') audio.currentTime = d.seekTime; }
+      seekto: function (d) { if (d && typeof d.seekTime === 'number') audio.currentTime = d.seekTime; },
+      stop: function () { pause(); }
     };
     Object.keys(handlers).forEach(function (k) {
       try { ms.setActionHandler(k, handlers[k]); } catch (e) { /* unsupported action */ }
@@ -1888,7 +1922,7 @@
   var hasFSA = typeof window.showDirectoryPicker === 'function';
 
   async function openFolder() {
-    if (IS_IOS) { $('fileInput').click(); return; } // iPhone/iPad can't pick folders
+    if (IS_IOS || (IS_ANDROID && !window.showDirectoryPicker)) { $('fileInput').click(); return; } // phones pick songs, not folders
     if (!hasFSA) { $('dirInput').click(); return; }
     var handle;
     try {
@@ -2072,7 +2106,7 @@
     blue: [[59, 130, 246], [6, 182, 212]],
     green: [[16, 185, 129], [6, 182, 212]]
   };
-  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen'];
+  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio'];
   function isOn(key) { return DEFAULT_ON.indexOf(key) >= 0 ? settings[key] !== false : !!settings[key]; }
 
   function applyLook() {
@@ -2179,6 +2213,8 @@
 
       sCard('App', '',
         sRow('Works offline', offlineText(), '') +
+        sRow('Song-change notifications', 'Shows the new song when Tunebox is in the background.' + (('Notification' in window) ? '' : ' (Not supported here.)'), sSwitch('notify')) +
+        sRow('Sound effects engine', 'Powers the equalizer, reverb and crossfades. Turn off if music stops when your phone locks. Takes effect after reopening.' + (IS_IOS ? ' (Always off on iPhone/iPad.)' : ''), sSwitch('webAudio')) +
         sRow('Install app', isStandalone() ? 'Installed — open it from your Dock or Launchpad.' : 'Opens in its own window, like a Mac app.',
           isStandalone() ? '' : sBtn('Install', 'data-action="install"', true)) +
         sRow('Keyboard shortcuts', 'Space play · ←/→ seek · Shift+←/→ skip · ↑/↓ volume · / search · S shuffle · R repeat · M mute · L favourite · E equalizer · D DJ · F now playing · I up next · T theme · , settings', '', 'wide')) +
@@ -2195,6 +2231,14 @@
       case 'dj': if (val) startDj(); else stopDj(); return;
       case 'speed': case 'preservePitch': case 'reverb': case 'preamp': applyFx(); break;
       case 'accent': case 'glow': case 'viz': case 'reduceMotion': applyLook(); break;
+      case 'notify':
+        if (val && 'Notification' in window && Notification.permission !== 'granted') {
+          Notification.requestPermission().then(function (perm) {
+            if (perm !== 'granted') { settings.notify = false; saveSettings(); renderSettings(); toast('Notifications were blocked in the browser.'); }
+            else toast('You’ll see the song when it changes.', 2000);
+          });
+        }
+        break;
     }
     saveSettings();
   }
@@ -2313,6 +2357,27 @@
       if (p === 'granted') await scanHandle(list[i]);
     }
   }
+
+  /* ------------------------------ files opened from the OS ------------------------------ */
+  if ('launchQueue' in window && window.launchQueue.setConsumer) {
+    window.launchQueue.setConsumer(async function (params) {
+      if (!params.files || !params.files.length) return;
+      var entries = [];
+      for (var i = 0; i < params.files.length; i++) {
+        try { var f = await params.files[i].getFile(); entries.push({ file: f, path: 'Opened files/' + f.name }); } catch (e) { /* skip */ }
+      }
+      if (!entries.length) return;
+      ingest(entries, 'Opened files');
+      var first = state.byPath.get(entries[0].path);
+      if (first) playIds(entries.map(function (e) { var t = state.byPath.get(e.path); return t ? t.id : null; }).filter(function (x) { return x !== null; }), 0);
+    });
+  }
+  // app shortcuts (right-click the Dock / taskbar icon, or long-press on Android)
+  (function () {
+    var q = location.search;
+    if (/[?&]dj=1/.test(q)) setTimeout(function () { if (state.tracks.length) startDj(); else settings.dj = true; updateDjUi(); }, 1500);
+    if (/[?&]view=settings/.test(q)) setTimeout(function () { setView('settings'); }, 50);
+  })();
 
   /* ------------------------------ offline + install ------------------------------ */
   var deferredPrompt = null, offlineReady = false;
@@ -2610,7 +2675,7 @@
 
   /* ------------------------------ start ------------------------------ */
 
-  if (IS_IOS) {
+  if (IS_IOS || (IS_ANDROID && !window.showDirectoryPicker)) {
     $('btnEmptyOpen').textContent = 'Choose songs';
     $('btnEmptyOpen').nextElementSibling.hidden = true;
     $('emptyHint').textContent = 'Pick songs from the Files app — select several at once. They play right here, nothing is uploaded.';
@@ -2631,6 +2696,7 @@
     state: state, settings: settings,
     get audio() { return audio; },
     get graph() { return !!ac; },
-    get fading() { return !!fade; }
+    get fading() { return !!fade; },
+    get gain() { return deckGains ? deckGains[active].gain.value : null; }
   };
 })();
