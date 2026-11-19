@@ -4589,13 +4589,45 @@
     // Windows lists a "communications" device too — it's the same speakers, so skip it
     return list.filter(function (d) { return d.kind === 'audiooutput' && d.deviceId !== 'communications'; });
   }
-  function currentSinkName() { return settings.sinkId ? (settings.sinkLabel || 'Other speaker') : 'This device'; }
+  // what kind of device is it? (for the icon)
+  var DEV_ICONS = {
+    laptop: 'M4 5h16a1 1 0 0 1 1 1v10H3V6a1 1 0 0 1 1-1m1 2v7h14V7zM1 17h22v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2z',
+    phone: 'M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m0 3v14h8V5zm4 15.2a1 1 0 1 0 0-2 1 1 0 0 0 0 2',
+    headphones: 'M12 3a9 9 0 0 0-9 9v7a2 2 0 0 0 2 2h2v-8H5v-1a7 7 0 0 1 14 0v1h-2v8h2a2 2 0 0 0 2-2v-7a9 9 0 0 0-9-9',
+    speaker: 'M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m5 2.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6m0 5.8a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9m0 2a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5',
+    tv: 'M3 4h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1m1 2v10h16V6z',
+    desktop: 'M3 3h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1m1 2v10h16V5z'
+  };
+  function devKind(label) {
+    var l = (label || '').toLowerCase();
+    if (/airpods|headphone|headset|earbud|buds|earphone|beats|wh-|wf-|bose qc|quietcomfort|sony wh|hands-free|handsfree/.test(l)) return 'headphones';
+    if (/hdmi|displayport|tv|television|monitor|display audio|lg |samsung (q|tu|au)/.test(l)) return 'tv';
+    if (/jbl|speaker|soundlink|sonos|boom|marshall|flip|charge|soundcore|bluetooth|harman|anker|tribit|homepod/.test(l) && !/macbook|built-in|internal|realtek|laptop/.test(l)) return 'speaker';
+    if (/macbook|laptop|notebook/.test(l)) return 'laptop';
+    if (/imac|desktop/.test(l)) return 'desktop';
+    return IS_PHONE ? 'phone' : 'laptop';
+  }
+  function devIcon(kind) { return '<svg viewBox="0 0 24 24"><path fill="currentColor" d="' + (DEV_ICONS[kind] || DEV_ICONS.laptop) + '"/></svg>'; }
+  function thisDeviceName() { return IS_PHONE ? (IS_IOS ? 'This iPhone' : 'This phone') : /Mac/.test(navigator.userAgent) ? 'This Mac' : 'This computer'; }
+  // the pill at the top right of the full-screen player: what's playing the sound right now
   function updateOutputChip() {
-    $$('[data-cmd="output"]').forEach(function (b) {
-      var span = b.querySelector('.out-name');
-      if (!span) { span = document.createElement('span'); span.className = 'out-name'; b.appendChild(span); }
-      span.textContent = settings.sinkId ? ' · ' + settings.sinkLabel : '';
-    });
+    var paint = function (label, kind, other) {
+      $$('.out-pill').forEach(function (b) {
+        b.querySelector('.out-ic').innerHTML = devIcon(kind);
+        b.querySelector('.out-label').textContent = label;
+        b.classList.toggle('other', !!other);
+      });
+    };
+    if (settings.sinkId) { paint(settings.sinkLabel || 'Speaker', devKind(settings.sinkLabel), true); return; }
+    paint(thisDeviceName(), IS_PHONE ? 'phone' : 'laptop', false);
+    // when the computer's own default is headphones or a speaker, show that instead
+    if (canSink) outputDevices().then(function (devs) {
+      var d = devs.filter(function (x) { return x.deviceId === 'default' && x.label; })[0];
+      if (!d || settings.sinkId) return;
+      var name = d.label.replace(/^Default\s*-\s*/i, '').replace(/\s*\(.*?\)\s*$/, '');
+      var kind = devKind(name);
+      if (kind === 'headphones' || kind === 'speaker' || kind === 'tv') paint(name, kind, true);
+    }).catch(function () {});
   }
   async function openOutput() {
     if (!canSink) { castNow(); return; }
@@ -4608,7 +4640,7 @@
       var id = d.deviceId === 'default' ? '' : d.deviceId;
       var name = d.deviceId === 'default' ? 'Same as my computer (' + d.label.replace(/^Default\s*-\s*/i, '') + ')' : d.label;
       return '<button class="opt out-opt' + (id === cur ? ' on' : '') + '" data-sink="' + esc(id) + '" data-label="' + esc(d.label.replace(/^Default\s*-\s*/i, '')) + '">' +
-        '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4"/></svg><span>' + esc(name) + '</span>' + (id === cur ? '<em>Playing</em>' : '') + '</button>';
+        devIcon(d.deviceId === 'default' ? (IS_PHONE ? 'phone' : devKind(d.label.replace(/^Default\s*-\s*/i, ''))) : devKind(d.label)) + '<span>' + esc(name) + '</span>' + (id === cur ? '<em>Playing</em>' : '') + '</button>';
     }).join('') : '';
     openModal('<h3>Play on…</h3>' +
       (named
@@ -4653,12 +4685,16 @@
   // if the chosen speaker disappears (Bluetooth turned off), fall back to this device quietly
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     navigator.mediaDevices.addEventListener('devicechange', function () {
+      setTimeout(updateOutputChip, 400);
       if (!settings.sinkId) return;
       outputDevices().then(function (devs) {
         if (!devs.some(function (d) { return d.label; })) return;
         if (devs.some(function (d) { return d.deviceId === settings.sinkId; })) { applySink(settings.sinkId); return; }
         toast('“' + settings.sinkLabel + '” disconnected — playing on this device.', 3000);
         applySink('');
+        settings.sinkId = '';
+        saveSettings();
+        updateOutputChip();
       });
     });
   }

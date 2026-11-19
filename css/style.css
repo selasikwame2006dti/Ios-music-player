@@ -1730,4 +1730,28 @@ body.stage-on .toast { bottom: auto; top: calc(18px + env(safe-area-inset-top));
 .out-opt svg { width: 18px; height: 18px; margin-right: 10px; flex: none; opacity: 0.7; }
 .out-opt span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .out-opt em { font-style: normal; font-size: 11px; font-weight: 700; color: rgb(var(--tint)); margin-left: 8px; }
-.out-name { font-weight: 500; opacity: 0.8; max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* full screen: where it's playing + car mode, top right */
+.npv-top { position: absolute; top: 16px; right: 18px; z-index: 3; display: flex; align-items: center; }
+.out-pill, .car-round {
+  display: inline-flex; align-items: center; justify-content: center; height: 38px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--glass-2); color: var(--text); cursor: pointer; font: inherit;
+  -webkit-backdrop-filter: blur(20px) saturate(160%); backdrop-filter: blur(20px) saturate(160%);
+  -webkit-transition: background 0.2s, border-color 0.2s, -webkit-transform 0.15s; transition: background 0.2s, border-color 0.2s, transform 0.15s;
+}
+.out-pill { padding: 0 15px 0 11px; max-width: 240px; font-size: 13px; font-weight: 600; }
+.out-pill:hover, .car-round:hover { background: var(--active); }
+.out-pill:active, .car-round:active { -webkit-transform: scale(0.96); transform: scale(0.96); }
+.out-ic { display: inline-flex; width: 18px; height: 18px; margin-right: 8px; flex: none; }
+.out-ic svg { width: 18px; height: 18px; }
+.out-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.out-pill.other { border-color: rgba(var(--tint), 0.55); background: rgba(var(--tint), 0.2); }
+.out-pill.other .out-ic { color: rgb(var(--tint)); }
+.car-round { width: 38px; margin-left: 8px; padding: 0; }
+.car-round svg { width: 19px; height: 19px; }
+@media (max-width: 720px) {
+  .npv-top { top: 10px; right: 10px; }
+  .out-pill { max-width: 52vw; height: 36px; }
+  .car-round { width: 36px; height: 36px; }
+}
+@media (max-width: 720px) { body.stage-on .toast { top: calc(58px + env(safe-area-inset-top)); } }
