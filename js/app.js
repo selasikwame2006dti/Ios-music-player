@@ -192,7 +192,8 @@
     return 0;
   }
 
-  function ingest(entries, rootName) {
+  function ingest(entries, rootName, opts) {
+    opts = opts || {};
     var added = [], skippedDrm = 0;
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
@@ -220,9 +221,9 @@
     invalidate();
     renderAll();
     if (skippedDrm) toast(plural(skippedDrm, 'copy-protected iTunes file') + ' (.m4p) skipped — browsers can’t play those.', 5000);
-    if (!added.length && !skippedDrm) toast('No playable music found there.');
+    if (!added.length && !skippedDrm && !opts.quiet) toast(opts.rescan ? 'No new songs.' : 'No playable music found there.');
     if (added.length) {
-      toast('Added ' + plural(added.length, 'song') + '.');
+      toast((opts.rescan || opts.quiet ? 'Found ' + plural(added.length, 'new song') : 'Added ' + plural(added.length, 'song')) + '.');
       loadMetaCache().then(function () {
         var need = applyCache(added);
         invalidate();
@@ -1144,7 +1145,8 @@
       return;
     }
     ensureAudioGraph();
-    if (ac && ac.state === 'suspended') ac.resume();
+    if (ac && outputChanged) restartOutput();
+    else if (ac && ac.state === 'suspended') ac.resume();
     if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
     if (deckGains && settings.softPause !== false && audio.paused) { rampDeck(active, 0, 0); rampDeck(active, 1, 0.25); }
     var p = audio.play();
@@ -1289,6 +1291,7 @@
       updateTime(); updateLyricHighlight(); sampleStats(); listenTick(); ensureAudible(); maybeAutoCrossfade(); saveLastSoon();
     });
     d.addEventListener('seeked', function () { if (this === audio) { lyricIdx = -1; updateLyricHighlight(); } });
+    ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata'].forEach(function (ev) { d.addEventListener(ev, function () { if (this === audio) lastPosState = 0; }); });
     d.addEventListener('error', function () {
       if (this !== audio) return;
       var t = state.current;
@@ -1438,6 +1441,7 @@
     updateUpNext();
   }
 
+  var lastPosState = 0;
   function updateTime() {
     var d = audio.duration || (state.current && state.current.duration) || 0;
     if (!seeking) {
@@ -1449,7 +1453,9 @@
       $$('.t-cur').forEach(function (el) { el.textContent = fmtTime(audio.currentTime); });
     }
     $$('.t-dur').forEach(function (el) { el.textContent = fmtTime(d); });
-    if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && d && isFinite(d)) {
+    var nowMs = Date.now();
+    if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && d && isFinite(d) && (nowMs - lastPosState > 4000 || seeking)) {
+      lastPosState = nowMs;
       try { navigator.mediaSession.setPositionState({ duration: d, position: Math.min(audio.currentTime, d), playbackRate: audio.playbackRate }); } catch (e) { /* ignore */ }
     }
   }
@@ -1483,14 +1489,30 @@
     arts.forEach(function (el) { paintCover(el, t, t.album); });
 
     var ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
-    if (ms && window.MediaMetadata) ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album });
-    getCover(t).then(function (c) {
-      if (state.current !== t) return;
-      if (ms && window.MediaMetadata && c) {
-        ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album, artwork: [{ src: c.url, sizes: '400x400' }] });
-      }
+    var appArt = [{ src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }];
+    if (ms && window.MediaMetadata) { try { ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album, artwork: appArt }); } catch (e) { /* ignore */ } }
+    getCover(t).then(function (c) { return c ? coverForSession(c.url) : null; }).then(function (art) {
+      if (state.current !== t || !ms || !window.MediaMetadata || !art) return;
+      try { ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album, artwork: [{ src: art, sizes: '512x512', type: 'image/jpeg' }] }); } catch (e) { /* ignore */ }
     });
     if (!(state.view === 'album' || state.view === 'artist')) applyViewTint();
+  }
+
+  // lock screens and notification shades can't always read blob: links, so hand them a small JPEG
+  function coverForSession(url) {
+    return new Promise(function (res) {
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var cv = document.createElement('canvas'), n = Math.min(512, Math.max(img.naturalWidth, 96));
+          cv.width = cv.height = n;
+          cv.getContext('2d').drawImage(img, 0, 0, n, n);
+          res(cv.toDataURL('image/jpeg', 0.85));
+        } catch (e) { res(url); }
+      };
+      img.onerror = function () { res(null); };
+      img.src = url;
+    });
   }
 
   function updateUpNext() {
@@ -1549,7 +1571,7 @@
   // Built on first play (browsers require a click first). Skipped on iPhone/iPad, where routing
   // audio through Web Audio can stop playback when the screen locks.
   var ac = null, eqNodes = null, analyser = null, freq = null, deckGains = null, trims = null, masterGain = null, leveller = null, levelMakeup = null;
-  var preampNode = null, dryNode = null, wetNode = null, limiter = null;
+  var preampNode = null, dryNode = null, wetNode = null, limiter = null, convNode = null, eqOut = null, convOn = false;
   var EQ_BANDS = [
     { f: 32, type: 'lowshelf', label: '32' },
     { f: 64, type: 'peaking', label: '64' },
@@ -1601,7 +1623,7 @@
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     try {
-      ac = new AC();
+      try { ac = new AC({ latencyHint: 'playback' }); } catch (e0) { ac = new AC(); }
       preampNode = ac.createGain();
       trims = [];
       deckGains = decks.map(function (d, i) {
@@ -1632,11 +1654,12 @@
       routeLeveller();
       dryNode = ac.createGain();
       wetNode = ac.createGain();
-      var conv = ac.createConvolver();
-      conv.buffer = makeImpulse(2.8, 2.4);
+      // the reverb is heavy work, so it's only wired in while it's actually turned up
+      convNode = ac.createConvolver();
+      convNode.buffer = makeImpulse(2.8, 2.4);
+      eqOut = node;
       node.connect(dryNode);
-      node.connect(conv);
-      conv.connect(wetNode);
+      convNode.connect(wetNode);
       // a limiter catches peaks, so big EQ boosts get loud without crackling
       limiter = ac.createDynamicsCompressor();
       limiter.threshold.value = -1.5;
@@ -1656,6 +1679,7 @@
       masterGain.connect(ac.destination);
       // keep audio flowing in the background: if the system pauses the audio engine, wake it again
       ac.onstatechange = function () { if (ac.state !== 'running' && !audio.paused) ac.resume(); };
+      watchOutput();
       applyEq();
       applyFx();
       applyVolumeToDecks();
@@ -1664,6 +1688,44 @@
       ac = null; eqNodes = null; analyser = null; deckGains = null; trims = null; masterGain = null;
     }
   }
+  // When headphones/Bluetooth connect or disconnect, phones move the sound to another output.
+  // Restarting the audio engine there stops it from stuttering on the new output.
+  var outputChanged = false, outputWatched = false;
+  function watchOutput() {
+    if (outputWatched || !navigator.mediaDevices || !navigator.mediaDevices.addEventListener) return;
+    outputWatched = true;
+    navigator.mediaDevices.addEventListener('devicechange', function () {
+      outputChanged = true;
+      setTimeout(function () { if (!audio.paused) restartOutput(); }, 600);
+    });
+  }
+  function restartOutput() {
+    outputChanged = false;
+    if (!ac) return Promise.resolve();
+    return ac.suspend().catch(function () {}).then(function () {
+      return new Promise(function (r) { setTimeout(r, 120); });
+    }).then(function () { return ac.resume(); }).catch(function () {});
+  }
+  // a stutter check: if the audio clock falls behind real time, the output is struggling
+  var clockCheck = { at: 0, t: 0, bad: 0, fixes: [] };
+  setInterval(function () {
+    if (!ac || audio.paused || ac.state !== 'running') { clockCheck.at = 0; return; }
+    var now = performance.now() / 1000, t = ac.currentTime;
+    if (clockCheck.at) {
+      var real = now - clockCheck.at, got = t - clockCheck.t;
+      if (real > 0.5 && got < real * 0.85) clockCheck.bad++; else clockCheck.bad = 0;
+      if (clockCheck.bad >= 2) {
+        clockCheck.bad = 0;
+        clockCheck.fixes = clockCheck.fixes.filter(function (x) { return now - x < 120; });
+        clockCheck.fixes.push(now);
+        restartOutput();
+        if (clockCheck.fixes.length === 3) toast('Sound keeps stuttering on this device. If it continues, turn off Settings → App → Sound effects engine.', 6000);
+      }
+    }
+    clockCheck.at = now;
+    clockCheck.t = t;
+  }, 1000);
+
   function routeLeveller() {
     if (!preampNode || !leveller) return;
     try { preampNode.disconnect(); } catch (e) { /* ignore */ }
@@ -1679,6 +1741,8 @@
     var pre = typeof settings.preamp === 'number' ? settings.preamp : 0;
     preampNode.gain.setTargetAtTime(Math.pow(10, pre / 20), ac.currentTime, 0.05);
     var r = settings.reverb || 0;
+    if (r > 0 && !convOn) { eqOut.connect(convNode); convOn = true; }
+    else if (r <= 0 && convOn) { try { eqOut.disconnect(convNode); } catch (e) { /* ignore */ } convOn = false; }
     wetNode.gain.setTargetAtTime(r * 1.2, ac.currentTime, 0.08);
     dryNode.gain.setTargetAtTime(1 - r * 0.35, ac.currentTime, 0.08);
   }
@@ -1756,6 +1820,7 @@
   var viz = $('viz'), vctx = viz.getContext('2d');
   var BARS = 32, barH = new Float32Array(BARS), vizRunning = false, vizFrame = 0, vizPhase = 0;
   function vizVisible() { return viz.offsetParent !== null && !document.hidden; }
+  var vizGrad = null, vizGradAt = 0;
   function startViz() {
     if (vizRunning) return;
     vizRunning = true;
@@ -1769,11 +1834,14 @@
       var w = viz.width, h = viz.height, gap = 6;
       var bw = (w - gap * (BARS - 1)) / BARS;
       vctx.clearRect(0, 0, w, h);
-      var cs = getComputedStyle(document.documentElement);
-      var g = vctx.createLinearGradient(0, 0, w, 0);
-      g.addColorStop(0, 'rgb(' + cs.getPropertyValue('--tint').trim() + ')');
-      g.addColorStop(1, 'rgb(' + cs.getPropertyValue('--tint2').trim() + ')');
-      vctx.fillStyle = g;
+      if (vizFrame - vizGradAt > 60 || !vizGrad) {
+        var cs = getComputedStyle(document.documentElement);
+        vizGrad = vctx.createLinearGradient(0, 0, w, 0);
+        vizGrad.addColorStop(0, 'rgb(' + cs.getPropertyValue('--tint').trim() + ')');
+        vizGrad.addColorStop(1, 'rgb(' + cs.getPropertyValue('--tint2').trim() + ')');
+        vizGradAt = vizFrame;
+      }
+      vctx.fillStyle = vizGrad;
       if (analyser && playing) analyser.getByteFrequencyData(freq);
       vizPhase += playing ? 0.12 : 0;
       var settled = true;
@@ -1996,9 +2064,9 @@
     var handlers = {
       play: play, pause: pause,
       previoustrack: prev, nexttrack: function () { next(false); },
-      seekbackward: function () { audio.currentTime = Math.max(0, audio.currentTime - 10); },
-      seekforward: function () { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10); },
-      seekto: function (d) { if (d && typeof d.seekTime === 'number') audio.currentTime = d.seekTime; },
+      seekbackward: function (d) { audio.currentTime = Math.max(0, audio.currentTime - ((d && d.seekOffset) || 10)); lastPosState = 0; updateTime(); },
+      seekforward: function (d) { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + ((d && d.seekOffset) || 10)); lastPosState = 0; updateTime(); },
+      seekto: function (d) { if (d && typeof d.seekTime === 'number') { if (d.fastSeek && audio.fastSeek) audio.fastSeek(d.seekTime); else audio.currentTime = d.seekTime; lastPosState = 0; updateTime(); } },
       stop: function () { pause(); }
     };
     Object.keys(handlers).forEach(function (k) {
@@ -2011,7 +2079,8 @@
   var hasFSA = typeof window.showDirectoryPicker === 'function';
 
   async function openFolder() {
-    if (IS_IOS || (IS_ANDROID && !window.showDirectoryPicker)) { $('fileInput').click(); return; } // phones pick songs, not folders
+    if (IS_IOS) { $('fileInput').click(); return; } // iPhone can only pick songs
+    if (IS_ANDROID && !window.showDirectoryPicker) { $('dirInput').click(); return; } // Android: pick a whole folder
     if (!hasFSA) { $('dirInput').click(); return; }
     var handle;
     try {
@@ -2028,16 +2097,16 @@
     await scanHandle(handle);
   }
 
-  async function scanHandle(handle) {
+  async function scanHandle(handle, opts) {
     var out = [];
-    setStatus('Looking for music…');
+    if (!(opts && opts.quiet)) setStatus('Looking for music…');
     try {
       await walkHandle(handle, handle.name, out);
     } catch (e) {
       toast('Couldn’t read that folder: ' + (e && e.message ? e.message : e));
     }
     setStatus('');
-    ingest(out, handle.name);
+    ingest(out, handle.name, opts);
   }
 
   async function walkHandle(dir, prefix, out) {
@@ -2197,7 +2266,7 @@
     blue: [[59, 130, 246], [6, 182, 212]],
     green: [[16, 185, 129], [6, 182, 212]]
   };
-  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level'];
+  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level', 'watchFolders'];
   // these default depending on the device
   var DEVICE_DEFAULTS = { analyze: function () { return !IS_PHONE; }, keepFiles: function () { return IS_PHONE || !hasFSA; } };
   function isOn(key) {
@@ -2303,11 +2372,12 @@
       sCard('Library', plural(state.tracks.length, 'song') + ' · ' + plural(getAlbums().length, 'album') + ' · song info saved for ' + plural(cached, 'song'),
         sRow('Open library automatically', 'Load your music folder when Tunebox starts (Chrome).', sSwitch('autoOpen')) +
         sRow('Add music', 'Folders or single songs.', sBtn('Add folder', 'data-cmd="open-folder"', true) + ' ' + sBtn('Add songs', 'data-cmd="add-files"')) +
-        sRow('Rescan folders', 'Pick up new songs you’ve added.', sBtn('Rescan', 'data-action="rescan"')) +
+        sRow('Check for new songs', hasFSA ? 'Look in your music folders for songs you’ve added.' : 'Pick your music folder again — only new songs are added.', sBtn('Check now', 'data-action="rescan"')) +
+        (hasFSA ? sRow('Watch folders', 'Automatically add new songs when you come back to Tunebox (and every 10 minutes).', sSwitch('watchFolders')) : '') +
         sRow('Even out volume', 'Plays quiet and loud songs at the same level (uses ReplayGain tags, or measures each song).', sSwitch('level')) +
         sRow('Smooth loudness peaks', 'Gentle compression — great for noisy places or laptop speakers.', sSwitch('compress')) +
         sRow('Analyse songs in the background', 'Measures loudness and tempo (for the DJ), a little at a time. ' + analysedCount() + ' of ' + state.tracks.length + ' done.', sSwitch('analyze')) +
-        sRow('Keep picked songs on this device', 'Songs added with “Choose songs” stay in Tunebox after closing — handy on phones. ' + (storageText || ''), sSwitch('keepFiles')) +
+        sRow('Keep picked songs on this device', 'Songs you pick (or folders you choose on a phone) stay in Tunebox after closing. ' + (storageText || ''), sSwitch('keepFiles')) +
         sRow('Saved songs', 'Remove the copies Tunebox kept (your originals stay).', sBtn('Remove', 'data-action="clear-files"')) +
         sRow('Saved song info', 'Makes big libraries load instantly. Clear it if tags look wrong.', sBtn('Clear', 'data-action="clear-cache"')) +
         sRow('Remove everything', 'Your music files are never touched.', sBtn('Clear library', 'data-action="clear"'))) +
@@ -2459,17 +2529,36 @@
       });
     }).catch(function () {}).then(function () { metaCache = new Map(); });
   }
-  async function rescanFolders() {
-    if (!hasFSA) { toast('Choose your music folder again to pick up new songs.'); openFolder(); return; }
+  async function rescanFolders(quiet) {
+    if (!hasFSA) {
+      if (quiet) return;
+      if (IS_IOS) { $('fileInput').click(); return; }
+      toast('Pick the same folder again. Only new songs are added.', 3500);
+      setTimeout(function () { $('dirInput').click(); }, 400);
+      return;
+    }
     var list = (await idbGet('handles')) || [];
-    if (!list.length) { openFolder(); return; }
+    if (!list.length) { if (!quiet) openFolder(); return; }
+    var before = state.tracks.length;
     for (var i = 0; i < list.length; i++) {
       var p = 'prompt';
       try { p = await list[i].queryPermission({ mode: 'read' }); } catch (e) { /* ignore */ }
-      if (p !== 'granted') { try { p = await list[i].requestPermission({ mode: 'read' }); } catch (e) { /* ignore */ } }
-      if (p === 'granted') await scanHandle(list[i]);
+      if (p !== 'granted' && !quiet) { try { p = await list[i].requestPermission({ mode: 'read' }); } catch (e) { /* ignore */ } }
+      if (p === 'granted') await scanHandle(list[i], { quiet: true });
     }
+    if (!quiet && state.tracks.length === before) toast('No new songs.', 1600);
   }
+  // Watch folders: when you come back to Tunebox, quietly look for songs you've added since
+  var lastWatch = Date.now();
+  function watchFolders() {
+    if (!hasFSA || !isOn('watchFolders') || document.hidden || !state.folders.length) return;
+    if (Date.now() - lastWatch < 90000) return;
+    lastWatch = Date.now();
+    rescanFolders(true);
+  }
+  document.addEventListener('visibilitychange', watchFolders);
+  window.addEventListener('focus', watchFolders);
+  setInterval(function () { if (!document.hidden && Date.now() - lastWatch > 10 * 60000) { lastWatch = 0; watchFolders(); } }, 60000);
 
   /* ------------------------------ files opened from the OS ------------------------------ */
   if ('launchQueue' in window && window.launchQueue.setConsumer) {
@@ -3369,8 +3458,8 @@
     var items = [
       ['albums', 'Albums', 'view'], ['artists', 'Artists', 'view'], ['playlists', 'Playlists', 'view'], ['favorites', 'Favourites', 'view'],
       ['queue', 'Up Next', 'view'], ['stats', 'Listening Stats', 'view'], ['eq', 'Equalizer & Vibes', 'cmd'], ['sleep', 'Sleep timer', 'cmd'],
-      ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
-    ];
+      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
+    ].filter(function (it) { return !(IS_IOS && it[0] === 'open-folder'); });
     openModal('<h3>Browse</h3><div class="browse-list">' + items.map(function (it) {
       return '<button ' + (it[2] === 'view' ? 'data-view="' + it[0] + '"' : 'data-cmd="' + it[0] + '"') + ' data-close>' + it[1] + '<span>›</span></button>';
     }).join('') + '</div>', null, 'sheet');
@@ -4101,6 +4190,7 @@
   var COMMANDS = {
     'open-folder': openFolder,
     'add-files': function () { $('fileInput').click(); },
+    'rescan': function () { rescanFolders(false); },
     toggle: toggle,
     next: function () { next(false); },
     prev: prev,
@@ -4144,7 +4234,10 @@
 
   $('dirInput').addEventListener('change', function () {
     var r = filesFromInput(this);
-    ingest(r.entries, r.root);
+    var fresh = r.entries.filter(function (e) { return !state.byPath.has(e.path); });
+    var again = r.root && state.folders.indexOf(r.root) >= 0;
+    ingest(r.entries, r.root, { rescan: again });
+    if (IS_PHONE) storeFiles(fresh); // phones can't re-open a folder later, so keep the songs
     this.value = '';
   });
   $('fileInput').addEventListener('change', function () {
@@ -4375,9 +4468,13 @@
   /* ------------------------------ start ------------------------------ */
 
   if (IS_IOS || (IS_ANDROID && !window.showDirectoryPicker)) {
-    $('btnEmptyOpen').textContent = 'Choose songs';
-    $('btnEmptyOpen').nextElementSibling.hidden = true;
-    $('emptyHint').textContent = 'Pick songs from the Files app — select several at once. They play right here, nothing is uploaded.';
+    if (IS_IOS) {
+      $('btnEmptyOpen').textContent = 'Choose songs';
+      $('btnEmptyOpen').nextElementSibling.hidden = true;
+      $('emptyHint').textContent = 'Pick songs from the Files app — select several at once. They play right here, nothing is uploaded.';
+    } else {
+      $('emptyHint').textContent = 'Choose your Music or Download folder to add everything in it, or pick single songs. Nothing is uploaded. Use “Check for new songs” later to add new ones.';
+    }
   }
 
   updateVolume();

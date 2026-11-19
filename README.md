@@ -74,6 +74,13 @@ Tip: bookmark the page so you can open it in one click.
 - **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
 - A Settings page for all of the above
 
+## Fixes and phone improvements
+
+- **Choppy sound after Bluetooth disconnects:** when headphones connect or disconnect, Tunebox restarts its audio engine on the new output. It also watches for stutter and fixes it by itself. It uses larger audio buffers on phones and only runs the reverb while it's turned up. If sound still stutters, turn off **Settings → App → Sound effects engine**.
+- **Android folders:** **Choose music folder** now picks a whole folder on Android, such as Music or Download. The songs are kept in Tunebox.
+- **Check for new songs** (sidebar, Browse or Settings) adds only songs that aren't in your library yet. On a computer with Chrome or Edge, **Watch folders** does this by itself when you come back to Tunebox and every 10 minutes. On a phone, pick the same folder again.
+- **Lock screen and notification controls:** album art shows reliably, the progress bar stays in sync, skip and seek buttons work, and tapping a song notification brings Tunebox back.
+
 ## Windows, Android, iPhone
 
 - **Windows:** use Chrome or Edge, and click **Install app** in the sidebar. Tunebox then appears in the Start menu and taskbar. Once it's installed, you can right-click a song in File Explorer and choose **Open with → Tunebox**. The Windows media keys and volume overlay work.
