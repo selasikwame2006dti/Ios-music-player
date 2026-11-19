@@ -50,6 +50,14 @@ Tip: bookmark the page so you can open it in one click.
 - **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
 - A Settings page for all of the above
 
+## Windows, Android, iPhone
+
+- **Windows:** use Chrome or Edge, and click **Install app** in the sidebar. Tunebox then appears in the Start menu and taskbar. Once it's installed, you can right-click a song in File Explorer and choose **Open with → Tunebox**. The Windows media keys and volume overlay work.
+- **Android:** open the link in Chrome and choose **Install app** (or **Add to Home screen**). Pick songs with **Choose songs**. Music keeps playing when you lock the screen, with controls in the notification shade and on the lock screen. If music ever stops when the phone locks, turn off **Settings → App → Sound effects engine**.
+- **iPhone / iPad:** in Safari, tap Share → **Add to Home Screen**. The equalizer, reverb and crossfades aren't available there, because Safari on iPhone doesn't allow them.
+- **App shortcuts:** right-click the Dock or taskbar icon (or long-press it on Android) to jump straight to **Start Tunebox DJ** or **Settings**.
+- **Notifications:** turn on **Settings → App → Song-change notifications** to see each new song while Tunebox is in the background.
+
 ## Keyboard shortcuts
 
 | Key | Action |
