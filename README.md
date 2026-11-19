@@ -74,6 +74,13 @@ Tip: bookmark the page so you can open it in one click.
 - **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
 - A Settings page for all of the above
 
+## Progress bar styles
+
+Choose in **Settings → Appearance → Progress bar**:
+- **Waveform** (default): the song's shape, showing its loud and quiet parts, like Audiomack or SoundCloud. Each song is read once and its shape is saved. Until then, a soft placeholder shape shows.
+- **Wave:** the played part ripples, bigger when the music is louder, and flattens when you pause.
+- **Classic:** a simple line.
+
 ## Radio
 
 - **Radio** (sidebar, or the Radio tab on phones): thousands of free live stations from the community-run radio-browser.info directory.

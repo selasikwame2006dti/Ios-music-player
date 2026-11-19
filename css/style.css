@@ -1832,3 +1832,22 @@ body.radio-on .np-art, body.radio-on .stage-art, body.radio-on .npv-art { positi
 @media (max-width: 720px) {
   .onair-title { white-space: normal; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 21px; }
 }
+
+/* =====================================================================
+   Progress bar styles (Waveform / Wave)
+   ===================================================================== */
+.seek-wrap { position: relative; display: block; flex: 1; min-width: 0; }
+.seek .seek-wrap { margin: 0 10px; }
+.seek.big .seek-wrap { margin: 0; width: 100%; }
+.seek .seek-wrap .range { display: block; width: 100%; margin: 0; }
+.seek-cv { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
+body.seek-fancy .seek-cv { display: block; }
+body.seek-fancy .seek-wrap .range { position: relative; z-index: 1; opacity: 0; height: 100%; }
+body.seek-waveform .seek-wrap { height: 30px; }
+body.seek-waveform .seek.big .seek-wrap { height: 46px; }
+body.seek-waveform .npv-side .seek.big .seek-wrap { height: 58px; }
+body.seek-wave .seek-wrap { height: 20px; }
+body.seek-wave .seek.big .seek-wrap { height: 26px; }
+body.seek-wave .npv-side .seek.big .seek-wrap { height: 30px; }
+body.seek-fancy .seek.big .seek-times { margin-top: 4px; }
+body.radio-on .seek-wrap { display: none; }

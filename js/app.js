@@ -745,6 +745,7 @@
     document.body.classList.toggle('stage-on', state.stage);
     if (!state.stage) restoreLyrics();
     else { lyricIdx = -1; updateLyricHighlight(); lyricLoop(); }
+    if (typeof seekLoop === 'function') setTimeout(function () { seekLoop(true); }, 30);
     updateNavActive();
     applyViewTint();
     if (!state.stage) renderRows();
@@ -1142,6 +1143,8 @@
     renderRows();
     djFill();
     saveLast();
+    ensurePeaks(t, IS_PHONE ? 2500 : 600);
+    seekLoop(true);
   }
 
   function loadTrack(t, autoplay, startAt) {
@@ -2833,6 +2836,8 @@
         sRow('Theme', 'Auto follows your Mac.', sSeg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], theme)) +
         sRow('Accent colour', accent === 'art' ? 'Colours come from the album art.' : 'Fixed colour.', swatches) +
         sRow('Background glow', '', sSlider('glow', 0, 1.6, 0.05, typeof settings.glow === 'number' ? settings.glow : 1, SLIDE_LABELS.glow(typeof settings.glow === 'number' ? settings.glow : 1))) +
+        sRow('Progress bar', seekStyle() === 'waveform' ? 'Shows the loud and quiet parts of the song.' : seekStyle() === 'wave' ? 'Ripples with the music while it plays.' : 'A simple line.',
+          sSeg('seekStyle', [['waveform', 'Waveform'], ['wave', 'Wave'], ['classic', 'Classic']], seekStyle())) +
         sRow('Visualizer', 'The moving bars under the cover.', sSwitch('viz')) +
         sRow('Reduce motion', 'Fewer animations — easier on older Macs.', sSwitch('reduceMotion'))) +
 
@@ -2894,6 +2899,7 @@
   function applySetting(key, val) {
     switch (key) {
       case 'lyricWords': renderLyrics(); break;
+      case 'seekStyle': applySeekStyle(); break;
       case 'lyricsOnline': if (val && state.current && !state.lyrics) onlineLyricsFor(state.current); break;
       case 'gapless': resetGapless(); break;
       case 'theme':
@@ -2988,7 +2994,7 @@
       });
     }).catch(function () { return new Map(); }).then(function (m) { metaCache = m; return m; });
   }
-  var META_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'track', 'disc', 'year', 'genre', 'bpm', 'duration', 'rg', 'loud', 'bpmAuto'];
+  var META_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'track', 'disc', 'year', 'genre', 'bpm', 'duration', 'rg', 'loud', 'bpmAuto', 'wf'];
   function applyCache(tracks) {
     var need = [];
     tracks.forEach(function (t) {
@@ -5752,6 +5758,253 @@
   }
 
 
+  /* =====================================================================
+     Progress bar styles: Waveform (the song's loud and quiet parts, like
+     Audiomack/SoundCloud) and Wave (a line that ripples with the music).
+     ===================================================================== */
+  function seekStyle() { return settings.seekStyle || 'waveform'; }
+  var seekCanvases = [];
+  (function setupSeekCanvases() {
+    $$('.seek-range').forEach(function (r) {
+      if (r.classList.contains('mobile-seek')) return; // the phone's thin line under the mini player stays simple
+      var wrap = document.createElement('span');
+      wrap.className = 'seek-wrap';
+      r.parentNode.insertBefore(wrap, r);
+      var c = document.createElement('canvas');
+      c.className = 'seek-cv';
+      wrap.appendChild(c);
+      wrap.appendChild(r);
+      c.__range = r;
+      seekCanvases.push(c);
+    });
+  })();
+  function applySeekStyle() {
+    var s = seekStyle();
+    document.body.classList.toggle('seek-fancy', s !== 'classic');
+    document.body.classList.toggle('seek-waveform', s === 'waveform');
+    document.body.classList.toggle('seek-wave', s === 'wave');
+    if (s === 'waveform' && state.current) ensurePeaks(state.current, 400);
+    seekLoop(true);
+  }
+
+  /* ---------------- the song's shape ---------------- */
+  var WF_N = 200;
+  var peaksMem = new Map();
+  function decodeWf(str) {
+    try {
+      var b = atob(str), a = new Float32Array(b.length);
+      for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i) / 255;
+      return a;
+    } catch (e) { return null; }
+  }
+  function placeholderPeaks(t) {
+    // a soft, made-up shape (the same for the same song) shown until the real one is ready
+    var h = 0, s = t ? t.path : 'x';
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    var a = new Float32Array(WF_N), p1 = (h & 255) / 40, p2 = ((h >> 8) & 255) / 40;
+    for (var j = 0; j < WF_N; j++) {
+      var x = j / WF_N;
+      a[j] = 0.32 + 0.1 * Math.sin(x * 23 + p1) + 0.07 * Math.sin(x * 61 + p2) + 0.05 * Math.sin(x * 7);
+    }
+    return a;
+  }
+  function peaksFor(t) {
+    if (!t) return null;
+    if (peaksMem.has(t.path)) return peaksMem.get(t.path);
+    if (t.wf) { var a = decodeWf(t.wf); if (a) { peaksMem.set(t.path, a); return a; } }
+    return null;
+  }
+  var wfBusy = false, wfMorph = { path: '', at: 0 };
+  function ensurePeaks(t, delay) {
+    if (!t || t.offline || peaksFor(t) || seekStyle() !== 'waveform') return;
+    setTimeout(function () {
+      if (state.current !== t || wfBusy || peaksFor(t)) return;
+      computePeaks(t);
+    }, delay);
+  }
+  async function computePeaks(t) {
+    if (!OAC || !t.file || t.file.size > 60e6) return; // very long mixes keep the soft shape
+    wfBusy = true;
+    try {
+      var buf = await readAB(t.file, t.file.size), ctx;
+      try { ctx = new OAC(1, 1, 8000); } catch (e) { ctx = new OAC(1, 1, 22050); }
+      var ab = await decodeAB(ctx, buf);
+      buf = null;
+      var d0 = ab.getChannelData(0), d1 = ab.numberOfChannels > 1 ? ab.getChannelData(1) : null;
+      var n = d0.length, per = Math.max(1, Math.floor(n / WF_N)), out = new Float32Array(WF_N);
+      for (var i = 0; i < WF_N; i++) {
+        var pk = 0, sq = 0, s0 = i * per, e0 = Math.min(n, s0 + per);
+        for (var k = s0; k < e0; k += 2) {
+          var v = d1 ? (Math.abs(d0[k]) + Math.abs(d1[k])) / 2 : Math.abs(d0[k]);
+          if (v > pk) pk = v;
+          sq += v * v;
+        }
+        out[i] = 0.55 * pk + 0.45 * Math.sqrt(sq / Math.max(1, (e0 - s0) / 2)) * 1.6;
+        if (i % 25 === 24) await sleepMs(0);
+      }
+      // scale so the loudest parts reach the top, and quiet parts stay visible
+      var sorted = Array.prototype.slice.call(out).sort(function (a, b) { return a - b; });
+      var top = sorted[Math.floor(WF_N * 0.97)] || 1, str = '';
+      for (var j = 0; j < WF_N; j++) {
+        var q = Math.min(1, Math.pow(out[j] / top, 0.85));
+        out[j] = Math.max(0.04, q);
+        str += String.fromCharCode(Math.round(out[j] * 255));
+      }
+      t.wf = btoa(str);
+      peaksMem.set(t.path, out);
+      markMetaDirty(t);
+      wfMorph = { path: t.path, at: performance.now() };
+      seekLoop(true);
+    } catch (e) { /* can't decode this file: keep the soft shape */ }
+    wfBusy = false;
+  }
+
+  /* ---------------- drawing ---------------- */
+  var wave = { amp: 0, phase: 0, level: 0.5 }, levelBuf = null;
+  function musicLevel() {
+    if (!analyser || audio.paused) return 0.5;
+    if (!levelBuf) levelBuf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(levelBuf);
+    var s = 0;
+    for (var i = 1; i < 24; i++) s += levelBuf[i];
+    return Math.min(1, s / (23 * 200));
+  }
+  function seekProgress(c) {
+    var r = c.__range;
+    if (seeking && document.activeElement === r) return r.value / 1000;
+    var d = audio.duration || (state.current && state.current.duration) || 0;
+    return d ? Math.min(1, audio.currentTime / d) : 0;
+  }
+  function cssColor(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  var seekColors = null, seekColorsAt = 0;
+  function colors() {
+    var now = performance.now();
+    if (!seekColors || now - seekColorsAt > 1500) {
+      seekColors = { tint: 'rgb(' + cssColor('--tint') + ')', tint2: 'rgb(' + cssColor('--tint2') + ')', dim: cssColor('--border-strong') || 'rgba(128,128,128,0.35)', text: cssColor('--text') || '#fff' };
+      seekColorsAt = now;
+    }
+    return seekColors;
+  }
+  function roundBar(ctx, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+  }
+  function drawWaveform(ctx, w, h, p, dpr, col) {
+    var t = state.current, real = peaksFor(t), soft = placeholderPeaks(t), mix = 1;
+    if (real && wfMorph.path === (t && t.path)) mix = Math.min(1, (performance.now() - wfMorph.at) / 600);
+    var bw = 3 * dpr, gap = 2 * dpr, n = Math.max(8, Math.floor((w + gap) / (bw + gap)));
+    var base = Math.round(h * 0.7), up = base - 1 * dpr, down = h - base - 1 * dpr;
+    var off = (w - (n * (bw + gap) - gap)) / 2;
+    function shape(fill, alpha) {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      for (var i = 0; i < n; i++) {
+        var k = Math.min(WF_N - 1, Math.floor(i / n * WF_N));
+        var v = real ? soft[k] * (1 - mix) + real[k] * mix : soft[k] * 0.9;
+        var hh = Math.max(2 * dpr, v * up), x = off + i * (bw + gap);
+        roundBar(ctx, x, base - hh, bw, hh, bw / 2);
+        roundBar(ctx, x, base + dpr, bw, Math.max(dpr, v * down * 0.9), bw / 2); // soft reflection below
+      }
+      ctx.fill();
+    }
+    var g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, col.tint);
+    g.addColorStop(1, col.tint2);
+    shape(col.dim, real ? 1 : 0.8);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, p * w, h);
+    ctx.clip();
+    shape(g, 1);
+    ctx.restore();
+    // fade the reflection a little
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'destination-out';
+    var fg = ctx.createLinearGradient(0, base, 0, h);
+    fg.addColorStop(0, 'rgba(0,0,0,0.45)');
+    fg.addColorStop(1, 'rgba(0,0,0,0.95)');
+    ctx.fillStyle = fg;
+    ctx.fillRect(0, base + dpr, w, h - base);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  function drawWave(ctx, w, h, p, dpr, col) {
+    var mid = h / 2, px = p * w, lw = 3 * dpr, len = 22 * dpr;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = lw;
+    // the part still to come: a calm straight line
+    ctx.strokeStyle = col.dim;
+    ctx.beginPath();
+    ctx.moveTo(Math.min(w - lw, px + 6 * dpr), mid);
+    ctx.lineTo(w - lw / 2, mid);
+    ctx.stroke();
+    // the part already played: a wave that ripples with the music
+    var g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, col.tint);
+    g.addColorStop(1, col.tint2);
+    ctx.strokeStyle = g;
+    ctx.beginPath();
+    var started = false;
+    for (var x = lw / 2; x <= px; x += 2 * dpr) {
+      var taper = Math.min(1, x / (10 * dpr), (px - x) / (14 * dpr) + 0.15);
+      var y = mid + Math.sin(x / len * Math.PI * 2 + wave.phase) * wave.amp * h * Math.max(0, taper);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    if (started) ctx.stroke();
+    // the handle: a small upright bar
+    ctx.fillStyle = col.text;
+    ctx.beginPath();
+    roundBar(ctx, Math.max(0, px - 2 * dpr), mid - h * 0.36, 4 * dpr, h * 0.72, 2 * dpr);
+    ctx.fill();
+  }
+  function drawSeeks() {
+    var style = seekStyle();
+    if (style === 'classic' || radio.on) return false;
+    var col = colors(), any = false;
+    for (var i = 0; i < seekCanvases.length; i++) {
+      var c = seekCanvases[i];
+      if (!c.offsetParent) continue;
+      any = true;
+      var dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
+      if (!w || !h) continue;
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      var ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+      var p = seekProgress(c);
+      if (style === 'waveform') drawWaveform(ctx, w, h, p, dpr, col);
+      else drawWave(ctx, w, h, p, dpr, col);
+    }
+    return any;
+  }
+  var seekRaf = 0, seekLast = 0;
+  function seekLoop(force) {
+    if (seekRaf) return;
+    seekRaf = requestAnimationFrame(function step(now) {
+      seekRaf = 0;
+      if (document.hidden) return;
+      var style = seekStyle(), playing = !audio.paused && !radio.on;
+      if (style === 'wave') {
+        var target = playing && !settings.reduceMotion ? 0.1 + 0.16 * wave.level : 0;
+        wave.level += (musicLevel() - wave.level) * 0.15;
+        wave.amp += (target - wave.amp) * 0.12;
+        if (playing && !settings.reduceMotion) wave.phase -= 0.12;
+      }
+      var morphing = performance.now() - wfMorph.at < 700;
+      // ~30 frames a second while moving, and only when a bar is on screen
+      if (now - seekLast >= 32 || force) { seekLast = now; force = false; if (!drawSeeks()) return; }
+      if (playing || morphing || seeking || (style === 'wave' && wave.amp > 0.002)) seekRaf = requestAnimationFrame(step);
+    });
+  }
+  ['play', 'pause', 'seeked', 'loadedmetadata'].forEach(function (ev) { decks.forEach(function (d) { d.addEventListener(ev, function () { if (this === audio) seekLoop(true); }); }); });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) seekLoop(true); });
+  window.addEventListener('resize', function () { seekLoop(true); });
+  $$('.seek-range').forEach(function (r) { r.addEventListener('input', function () { seekLoop(true); }); });
+
+
   /* ------------------------------ events ------------------------------ */
 
   var COMMANDS = {
@@ -6103,6 +6356,7 @@
 
   receiveJoin();
   window.addEventListener('hashchange', receiveJoin);
+  applySeekStyle();
 
   // exposed for debugging in the console
   window.Tunebox = {
