@@ -74,6 +74,18 @@ Tip: bookmark the page so you can open it in one click.
 - **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
 - A Settings page for all of the above
 
+## Lyrics, gapless, car mode and more
+
+- **Lyrics that follow the singer:**
+  - The line being sung shows under the song title in full screen, and each word lights up as it's sung. Tap it (or **Lyrics**) for the big lyrics view, and tap any line to jump there.
+  - The Now Playing panel lyrics highlight words too, and **⤢ Full screen** opens the big view.
+  - Word timing is exact with word-timed `.lrc` files. Otherwise Tunebox estimates it from each line.
+- **Lyrics from the internet:** when a song has no lyrics, tap **Find lyrics online**, or turn on **Settings → Find missing lyrics online**. Lyrics come from the free LRCLIB service, which sees only the song's title, artist, album and length. Results are saved, so they still work offline afterwards.
+- **Gapless playback:** with crossfade off, the next song starts the instant the current one ends. Great for live albums and DJ mixes.
+- **Play on…:** pick which speaker or headphones Tunebox uses (Chrome or Edge on a computer), and get help casting to a TV, Chromecast or AirPlay speaker.
+- **Car mode** (press **C**, the **Car** button in full screen, or **Browse**): huge buttons, swipe to skip, the current lyric line, a clock, and the screen stays on.
+- **Tidy up song info** (Settings → Library) cleans names like "Song (Official Video) [320kbps] www.site.com" and joins albums split across folders. You see a preview first, it can be undone, and your files are never changed.
+
 ## Fixes and phone improvements
 
 - **Choppy sound after Bluetooth disconnects:** when headphones connect or disconnect, Tunebox restarts its audio engine on the new output. It also watches for stutter and fixes it by itself. It uses larger audio buffers on phones and only runs the reverb while it's turned up. If sound still stutters, turn off **Settings → App → Sound effects engine**.
@@ -111,10 +123,11 @@ Tip: bookmark the page so you can open it in one click.
 | D | Tunebox DJ on / off |
 | I | Switch Up Next / Lyrics |
 | , | Settings |
+| C | Car mode |
 | L | Favourite the current song |
 | E | Equalizer |
 | T | Light / dark theme |
-| Esc | Close the equalizer or full-screen view |
+| Esc | Close car mode, the big lyrics view, the equalizer or full screen |
 | Enter | Play selected song |
 
 ## File formats

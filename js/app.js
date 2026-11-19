@@ -698,6 +698,7 @@
     state.stage = !!on && !!state.current;
     $('npStage').hidden = !state.stage;
     if (!state.stage) restoreLyrics();
+    else { lyricIdx = -1; updateLyricHighlight(); lyricLoop(); }
     updateNavActive();
     applyViewTint();
     if (!state.stage) renderRows();
@@ -1105,6 +1106,7 @@
       return;
     }
     cancelFade();
+    resetGapless();
     var prev = state.current;
     pendingSeek = startAt || 0;
     setDeckSource(active, t);
@@ -1120,7 +1122,9 @@
     cancelFade();
     var fromIdx = active, toIdx = 1 - active, from = decks[fromIdx], to = decks[toIdx];
     var prev = state.current;
-    setDeckSource(toIdx, t);
+    if (preloaded && preloaded.deck === toIdx && preloaded.id === t.id) setTrim(toIdx, t);
+    else setDeckSource(toIdx, t);
+    resetGapless();
     to.volume = masterGain ? 1 : 0;
     to.muted = muted;
     active = toIdx;
@@ -1721,6 +1725,7 @@
       applyFx();
       applyVolumeToDecks();
       if (state.current) setTrim(active, state.current);
+      if (settings.sinkId && ac.setSinkId) ac.setSinkId(settings.sinkId).catch(function () {});
     } catch (e) {
       ac = null; eqNodes = null; analyser = null; deckGains = null; trims = null; masterGain = null;
     }
@@ -1961,23 +1966,66 @@
       fr.readAsText(file);
     });
   }
+  // Lyrics: plain text, synced .lrc lines, or "enhanced" .lrc with a time for every word
+  // ([00:12.30]<00:12.30>Hello <00:12.80>world). When a file only has line times, each word's
+  // timing is estimated from the line's length so the words still light up as they're sung.
   function parseLyrics(text) {
-    var lines = [], plain = [];
+    var lines = [], plain = [], offset = 0;
+    var om = /\[offset:\s*([+-]?\d+)\s*\]/i.exec(text);
+    if (om) offset = parseInt(om[1], 10) / 1000;
+    var tsRe = /\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]/g;
     text.replace(/\r/g, '').split('\n').forEach(function (l) {
-      var m = /^((?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\])+)(.*)$/.exec(l.trim());
+      l = l.trim();
+      var m = /^((?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\])+)(.*)$/.exec(l);
       if (m) {
-        var txt = m[2].trim(), re = /\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]/g, tm;
-        while ((tm = re.exec(m[1]))) lines.push({ t: parseInt(tm[1], 10) * 60 + parseFloat(tm[2].replace(':', '.')), text: txt });
-      } else if (!/^\[[a-z]+:.*\]$/i.test(l.trim())) {
-        plain.push(l.trim());           // skip [ar:…] style header tags
+        var body = m[2].trim(), tm;
+        tsRe.lastIndex = 0;
+        while ((tm = tsRe.exec(m[1]))) lines.push({ t: Math.max(0, parseInt(tm[1], 10) * 60 + parseFloat(tm[2].replace(':', '.')) - offset), raw: body });
+      } else if (!/^\[[a-z]+:.*\]$/i.test(l)) {
+        plain.push(l);           // skip [ar:…] style header tags
       }
     });
-    if (lines.length) {
-      lines.sort(function (a, b) { return a.t - b.t; });
-      return { lines: lines.filter(function (x) { return x.text; }), synced: true };
+    if (!lines.length) {
+      while (plain.length && !plain[0]) plain.shift();
+      return plain.length ? { lines: plain.map(function (x) { return { t: 0, text: x, words: null }; }), synced: false } : null;
     }
-    while (plain.length && !plain[0]) plain.shift();
-    return plain.length ? { lines: plain.map(function (x) { return { t: 0, text: x }; }), synced: false } : null;
+    lines.sort(function (a, b) { return a.t - b.t; });
+    // a line lasts until the next time stamp (an empty timed line marks the end of singing)
+    lines.forEach(function (ln, i) { ln.end = i + 1 < lines.length ? lines[i + 1].t : ln.t + 6; });
+    var out = [];
+    lines.forEach(function (ln) {
+      var words = [], wr = /<(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)>([^<]*)/g, wm, exact = false;
+      if (/<\d{1,3}:\d{1,2}/.test(ln.raw)) {
+        while ((wm = wr.exec(ln.raw))) {
+          var wt = parseInt(wm[1], 10) * 60 + parseFloat(wm[2].replace(':', '.')) - offset;
+          if (wm[3]) words.push({ t: wt, w: wm[3] }); else if (words.length) words[words.length - 1].stop = wt;
+        }
+        exact = words.length > 0;
+      }
+      var txt = exact ? words.map(function (w) { return w.w; }).join('').replace(/\s+/g, ' ').trim() : ln.raw.replace(/<[^>]*>/g, '').trim();
+      if (!txt) return;
+      if (exact) {
+        words.forEach(function (w, i) { w.d = Math.max(0.08, (w.stop || (i + 1 < words.length ? words[i + 1].t : ln.end)) - w.t); });
+        words = words.filter(function (w) { return w.w.trim(); });
+      } else {
+        words = estimateWords(txt, ln.t, ln.end);
+      }
+      out.push({ t: ln.t, end: ln.end, text: txt, words: words, exact: exact });
+    });
+    return out.length ? { lines: out, synced: true } : null;
+  }
+  function estimateWords(txt, t0, t1) {
+    var parts = txt.split(/\s+/).filter(Boolean);
+    var span = Math.max(0.6, t1 - t0);
+    // most singers finish a line before the next starts; long gaps are held notes or breaks
+    var sung = Math.min(span * 0.88, parts.length * 0.7 + 0.8);
+    var weights = parts.map(function (w) { return w.replace(/[^\wÀ-￿]/g, '').length + 2; });
+    var total = weights.reduce(function (a, b) { return a + b; }, 0), at = t0;
+    return parts.map(function (w, i) {
+      var d = sung * weights[i] / total, o = { t: at, d: d, w: w };
+      at += d;
+      return o;
+    });
   }
   function loadLyrics(t) {
     state.lyrics = null;
@@ -1985,46 +2033,177 @@
     renderLyrics();
     var key = t.path.replace(/\.[^.\/]+$/, '').toLowerCase();
     var lrc = state.lrcFiles.get(key);
-    var p = lrc ? readText(lrc) : Meta.read(t.file, t.ext, true).then(function (m) { return m.lyrics; });
+    var p = lrc ? readText(lrc) : t.offline ? Promise.resolve('') : Meta.read(t.file, t.ext, true).then(function (m) { return m.lyrics; });
     p.then(function (txt) {
       if (state.current !== t) return;
       state.lyrics = txt ? parseLyrics(txt) : null;
       renderLyrics();
-    }).catch(function () { /* no lyrics */ });
+      if (!state.lyrics) noLocalLyrics(t);
+    }).catch(function () { if (state.current === t) noLocalLyrics(t); });
   }
+
   var lyricIdx = -1;
+  function wordsOn() { return settings.lyricWords !== false; }
+  function lineHtml(l, i, cls) {
+    var inner;
+    if (l.words && wordsOn()) {
+      inner = l.words.map(function (w, j) { return '<span class="lw" data-w="' + j + '">' + esc(w.w.trim()) + '</span>'; }).join(' ');
+    } else inner = esc(l.text);
+    return '<div class="' + cls + '" data-li="' + i + '">' + inner + '</div>';
+  }
+  // the same lyrics are shown in up to three places: the side panel, the live line in
+  // full screen, and the big full-screen lyrics view
+  function lyricBoxes() { return [$('lyricsView'), $('npvLyrics')]; }
   function renderLyrics() {
-    var v = $('lyricsView'), L = state.lyrics;
-    if (!state.current) { v.innerHTML = '<div class="insp-empty">Play a song to see its lyrics.</div>'; return; }
-    if (!L || !L.lines.length) {
-      v.className = 'lyrics-box';
-      v.innerHTML = '<div class="insp-empty">No lyrics found for this song.<br><br>Tip: put a <code>.lrc</code> file with the same name next to the song for synced lyrics, or add lyrics to the file’s tags.</div>';
+    var L = state.lyrics;
+    var has = !!(L && L.lines.length);
+    $('npStage').classList.toggle('has-lyrics', has);
+    $('npStage').classList.toggle('lyrics-synced-on', has && L.synced);
+    $('lyrExpand').hidden = !has || state.inspTab !== 'lyrics';
+    lyricBoxes().forEach(function (v, n) {
+      var big = n === 1;
+      if (!state.current) { v.innerHTML = '<div class="insp-empty">Play a song to see its lyrics.</div>'; return; }
+      if (!has) {
+        v.className = big ? 'npv-lyrics' : 'lyrics-box';
+        v.innerHTML = '<div class="insp-empty">No lyrics for this song.' +
+          '<div class="lyr-find"><button class="btn small primary" data-lyr="online">Find lyrics online</button>' + (lyricsOnlineAuto() ? '' : '<button class="btn small" data-lyr="always">Always look online</button>') + '</div>' +
+          '<small>Sends only the song’s title, artist and length to lrclib.net. Or put a <code>.lrc</code> file with the same name next to the song.</small></div>';
+        return;
+      }
+      v.className = (big ? 'npv-lyrics' : 'lyrics-box') + (L.synced ? ' lyrics-synced' : ' lyrics-plain');
+      v.innerHTML = (big ? '<div class="lyr-pad"></div>' : '') + L.lines.map(function (l, i) {
+        return l.text ? lineHtml(l, i, 'lyric-line') : '<div class="lyric-gap"></div>';
+      }).join('') + (big ? '<div class="lyr-pad end"></div>' : '') +
+        (L.synced ? '' : '<div class="lyr-note">These lyrics aren’t timed, so they scroll with the song.</div>') +
+        (L.online ? '<div class="lyr-note">Lyrics from LRCLIB</div>' : '');
+    });
+    renderLiveLine(-1);
+    lyricIdx = -1;
+    lastWordKey = '';
+    updateLyricHighlight();
+    lyricLoop();
+  }
+  // the live line in full screen: the line being sung now, with the next one underneath
+  function renderLiveLine(idx) {
+    var box = $('npvLive'), L = state.lyrics;
+    if (!L || !L.lines.length) { box.innerHTML = ''; return; }
+    if (!L.synced) {
+      var first = L.lines.filter(function (l) { return l.text; }).slice(0, 2).map(function (l) { return l.text; });
+      box.innerHTML = '<div class="live-cur plain">' + esc(first.join(' / ')) + '</div><div class="live-next">Tap to read the lyrics</div>';
+      box.setAttribute('data-idx', 'plain');
       return;
     }
-    v.className = 'lyrics-box ' + (L.synced ? 'lyrics-synced' : 'lyrics-plain');
-    v.innerHTML = L.lines.map(function (l, i) {
-      return l.text ? '<div class="lyric-line" data-li="' + i + '">' + esc(l.text) + '</div>' : '<div class="lyric-gap"></div>';
-    }).join('');
-    lyricIdx = -1;
-    updateLyricHighlight();
+    var cur = idx >= 0 ? L.lines[idx] : null, nx = L.lines[idx + 1];
+    var t = audio.currentTime;
+    var resting = !cur || (t > cur.end - 0.05 && nx && nx.t - t > 3);
+    box.innerHTML = (resting
+      ? '<div class="live-cur rest"><span class="dots"><i></i><i></i><i></i></span></div>'
+      : lineHtml(cur, idx, 'live-cur')) +
+      (nx ? '<div class="live-next">' + esc(nx.text) + '</div>' : '<div class="live-next"></div>');
+    box.setAttribute('data-idx', idx + (resting ? 'r' : ''));
   }
+  function currentLineIndex(t) {
+    var L = state.lyrics, lo = 0, hi = L.lines.length - 1, idx = -1;
+    while (lo <= hi) { var mid = (lo + hi) >> 1; if (L.lines[mid].t <= t) { idx = mid; lo = mid + 1; } else hi = mid - 1; }
+    return idx;
+  }
+  var lastWordKey = '', userScrolledAt = 0;
   function updateLyricHighlight() {
     var L = state.lyrics;
-    if (!L || !L.synced) return;
-    var t = audio.currentTime + 0.2, idx = -1;
-    for (var i = 0; i < L.lines.length; i++) { if (L.lines[i].t <= t) idx = i; else break; }
-    if (idx === lyricIdx) return;
-    var v = $('lyricsView');
-    var prev = v.querySelector('.lyric-line.active');
-    if (prev) prev.classList.remove('active');
-    lyricIdx = idx;
-    var el = idx >= 0 ? v.querySelector('[data-li="' + idx + '"]') : null;
-    if (el) {
-      el.classList.add('active');
-      if (!$('lyricsView').hidden && !audio.paused) {
-        var top = el.offsetTop - v.clientHeight / 2 + el.clientHeight / 2;
-        v.scrollTop = Math.max(0, top);
+    if (!L) return;
+    var boxes = lyricBoxes();
+    if (!L.synced) { scrollPlain(boxes); return; }
+    var t = audio.currentTime + 0.12, idx = currentLineIndex(t);
+    var live = $('npvLive'), cur = idx >= 0 ? L.lines[idx] : null, nx = L.lines[idx + 1];
+    var resting = !cur || (t > cur.end - 0.05 && nx && nx.t - t > 3);
+    if (live.getAttribute('data-idx') !== idx + (resting ? 'r' : '')) renderLiveLine(idx);
+    if (idx !== lyricIdx) {
+      boxes.forEach(function (v) {
+        Array.prototype.slice.call(v.querySelectorAll('.lyric-line.active')).forEach(function (el) { el.classList.remove('active', 'near'); });
+        Array.prototype.slice.call(v.querySelectorAll('.lyric-line.past')).forEach(function (el) { if (+el.getAttribute('data-li') >= idx) el.classList.remove('past'); });
+        if (idx >= 0) {
+          var el = v.querySelector('.lyric-line[data-li="' + idx + '"]');
+          if (el) {
+            el.classList.add('active');
+            for (var p = el.previousElementSibling; p && !p.classList.contains('past'); p = p.previousElementSibling) p.classList.add('past');
+            scrollToLine(v, el, v.id === 'npvLyrics' ? 0.38 : 0.42);
+          }
+        }
+      });
+      lyricIdx = idx;
+      lastWordKey = '';
+    }
+    paintWords(boxes.concat([live]), cur, t);
+  }
+  function paintWords(boxes, cur, t) {
+    if (!cur || !cur.words || !wordsOn()) return;
+    var wi = -1, prog = 0;
+    for (var i = 0; i < cur.words.length; i++) {
+      var w = cur.words[i];
+      if (t >= w.t) { wi = i; prog = Math.min(1, (t - w.t) / w.d); } else break;
+    }
+    var key = lyricIdx + ':' + wi + ':' + (prog >= 1 ? 1 : 0);
+    var changed = key !== lastWordKey;
+    lastWordKey = key;
+    boxes.forEach(function (v) {
+      var line = v.id === 'npvLive' ? v.querySelector('.live-cur') : v.querySelector('.lyric-line.active');
+      if (!line) return;
+      var spans = line.querySelectorAll('.lw');
+      if (changed || line.__wi === undefined) {
+        for (var j = 0; j < spans.length; j++) {
+          spans[j].classList.toggle('sung', j < wi || (j === wi && prog >= 1));
+          spans[j].classList.toggle('now', j === wi && prog < 1);
+          if (j !== wi) spans[j].style.removeProperty('--p');
+        }
+        line.__wi = wi;
       }
+      if (wi >= 0 && prog < 1 && spans[wi]) spans[wi].style.setProperty('--p', (prog * 100).toFixed(1) + '%');
+    });
+  }
+  function scrollToLine(v, el, at) {
+    if (v.hidden || !v.offsetParent || Date.now() - userScrolledAt < 3500) return;
+    var top = el.offsetTop - v.clientHeight * at + el.clientHeight / 2;
+    try { v.scrollTo({ top: Math.max(0, top), behavior: 'smooth' }); } catch (e) { v.scrollTop = Math.max(0, top); }
+  }
+  // untimed lyrics drift down the page as the song plays
+  function scrollPlain(boxes) {
+    var d = audio.duration;
+    if (!d || audio.paused || Date.now() - userScrolledAt < 5000) return;
+    boxes.forEach(function (v) {
+      if (v.hidden || !v.offsetParent) return;
+      var max = v.scrollHeight - v.clientHeight;
+      if (max > 0) v.scrollTop = max * Math.min(1, Math.max(0, (audio.currentTime - 8) / (d - 20)));
+    });
+  }
+  // smooth word fill while lyrics are on screen and music is playing
+  var lyricRaf = 0;
+  function lyricsVisible() {
+    if (!state.lyrics || !state.lyrics.synced) return false;
+    return (state.stage && (state.lyricsMode || $('npStage').classList.contains('has-lyrics'))) || (!$('lyricsView').hidden && !!$('lyricsView').offsetParent);
+  }
+  function lyricLoop() {
+    if (lyricRaf || audio.paused || !lyricsVisible() || !wordsOn()) return;
+    lyricRaf = requestAnimationFrame(function step() {
+      updateLyricHighlight();
+      if (!audio.paused && lyricsVisible() && !document.hidden) lyricRaf = requestAnimationFrame(step);
+      else lyricRaf = 0;
+    });
+  }
+  decks.forEach(function (d) { d.addEventListener('play', function () { if (this === audio) lyricLoop(); }); });
+  ['wheel', 'touchmove'].forEach(function (ev) {
+    lyricBoxes().forEach(function (v) { v.addEventListener(ev, function () { userScrolledAt = Date.now(); }, { passive: true }); });
+  });
+  // big lyrics view on the full-screen player
+  function setLyricsMode(on) {
+    state.lyricsMode = !!on && !!state.current;
+    $('npStage').classList.toggle('lyrics-mode', state.lyricsMode);
+    $$('[data-cmd="np-lyrics"]').forEach(function (b) { b.classList.toggle('on', state.lyricsMode); });
+    if (state.lyricsMode) {
+      userScrolledAt = 0;
+      lyricIdx = -1;
+      updateLyricHighlight();
+      if (!state.lyrics || !state.lyrics.synced) $('npvLyrics').scrollTop = 0;
+      lyricLoop();
     }
   }
 
@@ -2039,22 +2218,10 @@
   function closeDrawers() { /* no drawers in this layout */ }
   function toggleInspector() { setInspTab(state.inspTab === 'queue' ? 'lyrics' : 'queue'); }
   function applyInspectorSetting() { /* the Now Playing panel is always shown on wide windows */ }
-  function restoreLyrics() {
-    var lv = $('lyricsView'), home = document.querySelector('.upnext');
-    if (lv.parentNode !== home) home.appendChild(lv);
-    $('npvLyrics').hidden = true;
-    $$('[data-cmd="np-lyrics"]').forEach(function (b) { b.classList.remove('on'); });
-    setInspTab(state.inspTab);
-  }
+  function restoreLyrics() { setLyricsMode(false); }
   function toggleNpLyrics() {
-    var box = $('npvLyrics'), lv = $('lyricsView');
-    if (!box.hidden) { restoreLyrics(); return; }
-    box.appendChild(lv);
-    lv.hidden = false;
-    box.hidden = false;
-    $$('[data-cmd="np-lyrics"]').forEach(function (b) { b.classList.add('on'); });
-    lyricIdx = -1;
-    updateLyricHighlight();
+    if (!state.stage) { showStage(true); setLyricsMode(true); return; }
+    setLyricsMode(!state.lyricsMode);
   }
   function setInspTab(tab) {
     state.inspTab = tab;
@@ -2062,7 +2229,9 @@
     $('tabLyrics').classList.toggle('on', tab === 'lyrics');
     $('queueView').hidden = tab !== 'queue';
     $('lyricsView').hidden = tab !== 'lyrics';
-    if (tab === 'lyrics') { lyricIdx = -1; updateLyricHighlight(); }
+    $('lyrExpand').hidden = tab !== 'lyrics' || !state.lyrics;
+    $('seeAllQueue').hidden = tab === 'lyrics';
+    if (tab === 'lyrics') { userScrolledAt = 0; lyricIdx = -1; updateLyricHighlight(); lyricLoop(); }
   }
   function showInspector(tab) { setInspTab(tab); }
 
@@ -2429,7 +2598,7 @@
     blue: [[59, 130, 246], [6, 182, 212]],
     green: [[16, 185, 129], [6, 182, 212]]
   };
-  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level', 'watchFolders'];
+  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level', 'watchFolders', 'lyricWords', 'gapless'];
   // these default depending on the device
   var DEVICE_DEFAULTS = { analyze: function () { return !IS_PHONE; }, keepFiles: function () { return IS_PHONE || !hasFSA; } };
   function isOn(key) {
@@ -2513,6 +2682,10 @@
           sSlider('crossfade', 0, 12, 1, settings.crossfade || 0, SLIDE_LABELS.crossfade(settings.crossfade || 0))) +
         sRow('Smooth skips', 'Quick fade when you press next.', sSwitch('smoothSkip')) +
         sRow('Soft pause', 'Fade out/in on pause and play.', sSwitch('softPause')) +
+        sRow('Gapless playback', 'No silence between songs when crossfade is off — great for live albums and mixes.', sSwitch('gapless')) +
+        sRow('Play on', canSink ? (settings.sinkLabel || 'System default') : 'Use your device’s sound menu to pick a speaker.', sBtn(canSink ? 'Choose…' : 'Cast…', 'data-cmd="output"')) +
+        sRow('Find missing lyrics online', 'Looks up lyrics on lrclib.net (free) when a song has none. Only the title, artist and length are sent.', sSwitch('lyricsOnline')) +
+        sRow('Word-by-word lyrics', 'Light up each word as it’s sung. Exact with word-timed .lrc files; otherwise Tunebox estimates it from each line.', sSwitch('lyricWords')) +
         sRow('Vibe', vibe, '<div class="vibe-chips">' + Object.keys(VIBES).map(function (k) {
           return '<button data-vibe="' + k + '"' + (vibeKey() === k ? ' class="on"' : '') + '>' + VIBES[k].name + '</button>';
         }).join('') + '</div>', 'wide') +
@@ -2537,6 +2710,7 @@
         sRow('Add music', 'Folders or single songs.', sBtn('Add folder', 'data-cmd="open-folder"', true) + ' ' + sBtn('Add songs', 'data-cmd="add-files"')) +
         sRow('Check for new songs', hasFSA ? 'Look in your music folders for songs you’ve added.' : 'Pick your music folder again — only new songs are added.', sBtn('Check now', 'data-action="rescan"')) +
         (hasFSA ? sRow('Watch folders', 'Automatically add new songs when you come back to Tunebox (and every 10 minutes).', sSwitch('watchFolders')) : '') +
+        sRow('Tidy up song info', 'Clean messy names like “track01 (Official Video) [320kbps]” and join albums split across folders.', sBtn('Tidy up…', 'data-cmd="tidy"') + (tidyBackup ? ' ' + sBtn('Undo', 'data-cmd="tidy-undo"') : '')) +
         sRow('Even out volume', 'Plays quiet and loud songs at the same level (uses ReplayGain tags, or measures each song).', sSwitch('level')) +
         sRow('Smooth loudness peaks', 'Gentle compression — great for noisy places or laptop speakers.', sSwitch('compress')) +
         sRow('Analyse songs in the background', 'Measures loudness and tempo (for the DJ), a little at a time. ' + analysedCount() + ' of ' + state.tracks.length + ' done.', sSwitch('analyze')) +
@@ -2560,6 +2734,9 @@
 
   function applySetting(key, val) {
     switch (key) {
+      case 'lyricWords': renderLyrics(); break;
+      case 'lyricsOnline': if (val && state.current && !state.lyrics) onlineLyricsFor(state.current); break;
+      case 'gapless': resetGapless(); break;
       case 'theme':
         if (val === 'auto') delete settings.theme; else settings.theme = val;
         applyTheme();
@@ -3621,7 +3798,7 @@
     var items = [
       ['albums', 'Albums', 'view'], ['artists', 'Artists', 'view'], ['playlists', 'Playlists', 'view'], ['favorites', 'Favourites', 'view'],
       ['queue', 'Up Next', 'view'], ['stats', 'Listening Stats', 'view'], ['eq', 'Equalizer & Vibes', 'cmd'], ['sleep', 'Sleep timer', 'cmd'],
-      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
+      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['car', 'Car mode', 'cmd'], ['output', 'Play on… / Cast', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
     ].filter(function (it) { return !(IS_IOS && it[0] === 'open-folder'); });
     openModal('<h3>Browse</h3><div class="browse-list">' + items.map(function (it) {
       return '<button ' + (it[2] === 'view' ? 'data-view="' + it[0] + '"' : 'data-cmd="' + it[0] + '"') + ' data-close>' + it[1] + '<span>›</span></button>';
@@ -4348,6 +4525,365 @@
   }
 
 
+  /* =====================================================================
+     Gapless playback, choosing a speaker / casting, lyrics from the internet,
+     car mode, and tidying up messy song info.
+     ===================================================================== */
+
+  /* ---------------- gapless playback ----------------
+     With crossfade off, the next song is loaded on the spare deck a few seconds early
+     and started the instant the current one ends — no silence between tracks. */
+  var preloaded = null, gaplessTimer = null;
+  function peekNextIndex() {
+    var i = state.qIndex + 1;
+    while (i < state.queue.length && !playableAt(i)) i++;
+    return i < state.queue.length ? i : -1;
+  }
+  function resetGapless() {
+    clearTimeout(gaplessTimer);
+    gaplessTimer = null;
+    preloaded = null;
+  }
+  function gaplessTick() {
+    if (!isOn('gapless') || crossfadeSecs() > 0 || fade || seeking || audio.paused || state.repeat === 'one' || (sleep && sleep.mode === 'song')) return;
+    var d = audio.duration;
+    if (!d || !isFinite(d)) return;
+    var left = (d - audio.currentTime) / (audio.playbackRate || 1);
+    if (left > 8) { if (preloaded) resetGapless(); return; }
+    if (!preloaded) {
+      djFill();
+      var i = peekNextIndex();
+      if (i < 0) return;
+      var t = state.byId.get(state.queue[i]), idle = 1 - active;
+      preloaded = { deck: idle, id: t.id };
+      setDeckSource(idle, t);
+      decks[idle].preload = 'auto';
+      try { decks[idle].load(); } catch (e) { /* ignore */ }
+    }
+    if (left < 1.6 && !gaplessTimer) {
+      gaplessTimer = setTimeout(function () {
+        gaplessTimer = null;
+        if (!preloaded || audio.paused) return;
+        var i = peekNextIndex();
+        if (i < 0 || state.queue[i] !== preloaded.id) { resetGapless(); return; }
+        crossfadeTo(i, 0.03);
+      }, Math.max(0, (left - 0.03) * 1000));
+    }
+  }
+  decks.forEach(function (d) {
+    d.addEventListener('timeupdate', function () { if (this === audio) gaplessTick(); });
+    d.addEventListener('seeking', function () { if (this === audio && preloaded) resetGapless(); });
+  });
+
+  /* ---------------- speaker picker + cast / AirPlay ---------------- */
+  var canSink = !!((window.AudioContext && window.AudioContext.prototype.setSinkId) || (window.HTMLMediaElement && 'setSinkId' in HTMLMediaElement.prototype));
+  function applySink(id) {
+    id = id || '';
+    var p;
+    try {
+      if (ac && ac.setSinkId) p = ac.setSinkId(id);
+      else p = Promise.all(decks.map(function (d) { return d.setSinkId ? d.setSinkId(id) : null; }));
+    } catch (e) { return Promise.resolve(false); }
+    return Promise.resolve(p).then(function () { return true; }, function () { return false; });
+  }
+  async function outputDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
+    var list = await navigator.mediaDevices.enumerateDevices();
+    return list.filter(function (d) { return d.kind === 'audiooutput'; });
+  }
+  async function openOutput() {
+    var devs = canSink ? await outputDevices() : [];
+    var named = devs.some(function (d) { return d.label; });
+    var cur = settings.sinkId || '';
+    var rows = devs.map(function (d) {
+      var id = d.deviceId === 'default' ? '' : d.deviceId;
+      var name = d.label || (d.deviceId === 'default' ? 'System default' : 'Speaker');
+      return '<button class="opt out-opt' + ((id || '') === cur ? ' on' : '') + '" data-sink="' + esc(id) + '" data-label="' + esc(name) + '">' + esc(name.replace(/^Default - /, 'System default · ')) + '</button>';
+    }).join('');
+    openModal('<h3>Play on…</h3>' +
+      (canSink ? '<p class="modal-sub">Choose where Tunebox plays, without changing your computer’s sound settings.</p><div class="out-list">' + (rows || '<p class="insp-empty">No speakers found.</p>') + '</div>' +
+        (named ? '' : '<p class="modal-sub small">Your browser hides speaker names until you allow microphone access once. Tunebox never records anything — it only reads the names.</p><button class="btn small" id="outNames">Show speaker names</button>')
+        : '<p class="modal-sub">This browser can’t switch speakers by itself. Use your phone’s or computer’s sound menu (Bluetooth, AirPlay) instead.</p>') +
+      '<div class="set-card-head"><h3>Cast to a TV or speaker</h3></div>' +
+      '<div class="modal-actions wrap" style="justify-content:flex-start;margin-top:4px"><button class="btn" id="outCast">Cast / AirPlay…</button></div>' +
+      '<div class="modal-actions"><button class="btn primary" data-close>Done</button></div>',
+      function (m) {
+        m.addEventListener('click', function (e) {
+          var b = e.target.closest('[data-sink]');
+          if (!b) return;
+          var id = b.getAttribute('data-sink');
+          ensureAudioGraph();
+          applySink(id).then(function (ok) {
+            if (!ok) { toast('Couldn’t switch to that speaker.'); return; }
+            settings.sinkId = id;
+            settings.sinkLabel = b.getAttribute('data-label');
+            saveSettings();
+            $$('.out-opt').forEach(function (x) { x.classList.toggle('on', x === b); });
+            toast('Playing on ' + settings.sinkLabel, 1600);
+          });
+        });
+        var nb = m.querySelector('#outNames');
+        if (nb) nb.addEventListener('click', function () {
+          navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) { s.getTracks().forEach(function (t) { t.stop(); }); openOutput(); }, function () { toast('No problem — the speakers keep their short names.'); });
+        });
+        m.querySelector('#outCast').addEventListener('click', castNow);
+      }, 'wide');
+  }
+  function castNow() {
+    if (audio.webkitShowPlaybackTargetPicker) { closeModal(); try { audio.webkitShowPlaybackTargetPicker(); return; } catch (e) { /* fall through */ } }
+    var help = function () {
+      var mac = /Mac/.test(navigator.platform || navigator.userAgent), chrome = /Chrome|Edg/.test(navigator.userAgent);
+      openModal('<h3>Cast your music</h3><p class="modal-sub">Your songs are files on this device, so the easiest way is to send this device’s sound:</p><ul class="help-list">' +
+        (chrome && !IS_PHONE ? '<li><b>Chromecast / Google TV / Nest:</b> Chrome menu <b>⋮ → Cast…</b>, then <b>Sources → Cast tab</b>, and pick your TV or speaker.</li>' : '') +
+        (mac ? '<li><b>AirPlay speakers or Apple TV:</b> click <b>Control Centre → Sound</b> in the menu bar and choose the AirPlay device.</li>' : '') +
+        (IS_ANDROID ? '<li><b>Android:</b> pull down Quick Settings → <b>Cast</b> (or Smart View), or connect a Bluetooth speaker.</li>' : '') +
+        (IS_IOS ? '<li><b>iPhone:</b> open Control Centre, press and hold the music card, then tap the AirPlay icon.</li>' : '') +
+        '<li><b>Bluetooth speakers</b> work like any headphones — connect them in your device settings' + (canSink ? ', then pick them under <b>Play on…</b>' : '') + '.</li></ul>' +
+        '<div class="modal-actions"><button class="btn primary" data-close>Got it</button></div>', null, 'wide');
+    };
+    if (audio.remote && audio.remote.prompt) {
+      audio.remote.prompt().catch(help);
+      return;
+    }
+    help();
+  }
+
+  /* ---------------- lyrics from the internet (LRCLIB) ---------------- */
+  // Only the song's title, artist, album and length are sent — never the music itself.
+  var lyricsCache = null;
+  function lyricsCacheGet() {
+    if (lyricsCache) return Promise.resolve(lyricsCache);
+    return idbGet('lyricsCache').then(function (c) { lyricsCache = c || {}; return lyricsCache; }, function () { lyricsCache = {}; return lyricsCache; });
+  }
+  var saveLyricsCache = debounce(function () { idbSet('lyricsCache', lyricsCache); }, 1500);
+  function lyricsOnlineAuto() { return settings.lyricsOnline === true; }
+  async function fetchOnlineLyrics(t) {
+    var cache = await lyricsCacheGet(), key = trackKey(t);
+    var hit = cache[key];
+    if (hit && hit.txt) return hit.txt;
+    if (hit && hit.none && Date.now() - hit.at < 7 * 864e5) return '';
+    if (navigator.onLine === false) return '';
+    var artist = artistOf(t), base = 'https://lrclib.net/api/';
+    var q = 'artist_name=' + encodeURIComponent(artist) + '&track_name=' + encodeURIComponent(t.title);
+    var j = null;
+    try {
+      var url = base + 'get?' + q + (t.album && t.album !== 'Unknown Album' ? '&album_name=' + encodeURIComponent(t.album) : '') + (t.duration ? '&duration=' + Math.round(t.duration) : '');
+      var r = await fetch(url);
+      if (r.ok) j = await r.json();
+      if (!j || (!j.syncedLyrics && !j.plainLyrics)) {
+        var rs = await fetch(base + 'search?' + q);
+        var list = rs.ok ? await rs.json() : [];
+        list = (list || []).filter(function (x) { return x.syncedLyrics || x.plainLyrics; });
+        if (t.duration) list.sort(function (a, b) { return Math.abs((a.duration || 0) - t.duration) - Math.abs((b.duration || 0) - t.duration); });
+        j = list.filter(function (x) { return !t.duration || !x.duration || Math.abs(x.duration - t.duration) < 8; })[0] || null;
+      }
+    } catch (e) { return ''; }
+    var txt = j ? (j.syncedLyrics || j.plainLyrics || '') : '';
+    cache[key] = txt ? { txt: txt, at: Date.now() } : { none: 1, at: Date.now() };
+    saveLyricsCache();
+    return txt;
+  }
+  function onlineLyricsFor(t, manual) {
+    if (manual) { $$('[data-lyr="online"]').forEach(function (b) { b.textContent = 'Looking…'; b.disabled = true; }); }
+    return fetchOnlineLyrics(t).then(function (txt) {
+      if (state.current !== t || (state.lyrics && !state.lyrics.online)) return;
+      if (!txt) { if (manual) { toast('No lyrics found online for this song.', 2200); renderLyrics(); } return; }
+      state.lyrics = parseLyrics(txt);
+      if (state.lyrics) state.lyrics.online = true;
+      renderLyrics();
+    });
+  }
+  // called by loadLyrics when the song has no lyrics of its own
+  function noLocalLyrics(t) {
+    lyricsCacheGet().then(function (c) {
+      var hit = c[trackKey(t)];
+      if (hit && hit.txt) { onlineLyricsFor(t); return; }
+      if (lyricsOnlineAuto()) onlineLyricsFor(t);
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-lyr]');
+    if (!b || !state.current) return;
+    var act = b.getAttribute('data-lyr');
+    if (act === 'online') onlineLyricsFor(state.current, true);
+    else if (act === 'always') { settings.lyricsOnline = true; saveSettings(); onlineLyricsFor(state.current, true); }
+  });
+
+  /* ---------------- car mode ---------------- */
+  var car = null, wakeLock = null;
+  function keepAwake(on) {
+    if (on && navigator.wakeLock && navigator.wakeLock.request) {
+      navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; }).catch(function () {});
+    } else if (!on && wakeLock) { try { wakeLock.release(); } catch (e) { /* ignore */ } wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', function () { if (car && !document.hidden) keepAwake(true); });
+  function openCar() {
+    if (car) return;
+    car = document.createElement('div');
+    car.className = 'car-mode';
+    car.innerHTML =
+      '<div class="car-top"><button class="car-x" data-car="close" aria-label="Close car mode">✕</button><span class="car-clock" id="carClock"></span><button class="car-chip" data-car="dj">✦ DJ</button></div>' +
+      '<div class="car-main"><div class="car-art cover" id="carArt"></div>' +
+        '<div class="car-text"><div class="car-title" id="carTitle"></div><div class="car-sub" id="carSub"></div>' +
+        '<div class="car-lyric" id="carLyric"></div><div class="car-bar"><i id="carBar"></i></div></div></div>' +
+      '<div class="car-btns"><button data-car="prev" aria-label="Previous"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>' +
+        '<button class="car-play" data-car="toggle" id="carPlay" aria-label="Play or pause"></button>' +
+        '<button data-car="next" aria-label="Next"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6zm10-12v12h2V6z"/></svg></button></div>' +
+      '<div class="car-hint">Swipe left or right to skip · tap the cover to play or pause</div>';
+    document.body.appendChild(car);
+    document.body.classList.add('car-on');
+    car.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-car]');
+      if (e.target.closest('#carArt')) { toggle(); updateCar(); return; }
+      if (!b) return;
+      var a = b.getAttribute('data-car');
+      if (a === 'close') closeCar();
+      else if (a === 'prev') prev();
+      else if (a === 'next') next(false);
+      else if (a === 'toggle') toggle();
+      else if (a === 'dj') toggleDj();
+      setTimeout(updateCar, 50);
+    });
+    var sx = 0, sy = 0;
+    car.addEventListener('touchstart', function (e) { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+    car.addEventListener('touchend', function (e) {
+      var dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+      if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) { if (dx < 0) next(false); else prev(); setTimeout(updateCar, 50); }
+    });
+    keepAwake(true);
+    car.__iv = setInterval(updateCar, 400);
+    updateCar();
+  }
+  function closeCar() {
+    if (!car) return;
+    clearInterval(car.__iv);
+    car.remove();
+    document.body.classList.remove('car-on');
+    car = null;
+    keepAwake(false);
+  }
+  var carKey = '';
+  function updateCar() {
+    if (!car) return;
+    var t = state.current;
+    $('carTitle').textContent = t ? t.title : 'Nothing playing';
+    $('carSub').textContent = t ? artistOf(t) : 'Tap play to start';
+    $('carPlay').innerHTML = audio.paused ? ICON_PLAY : ICON_PAUSE;
+    var d = audio.duration || (t && t.duration) || 0;
+    $('carBar').style.width = (d ? audio.currentTime / d * 100 : 0).toFixed(1) + '%';
+    var d2 = new Date();
+    $('carClock').textContent = d2.getHours() + ':' + ('0' + d2.getMinutes()).slice(-2);
+    car.querySelector('[data-car="dj"]').classList.toggle('on', !!settings.dj);
+    var L = state.lyrics, line = '';
+    if (L && L.synced) { var i = currentLineIndex(audio.currentTime + 0.12); if (i >= 0 && audio.currentTime < L.lines[i].end + 0.5) line = L.lines[i].text; }
+    $('carLyric').textContent = line;
+    var k = t ? t.albumKey + t.id : '';
+    if (k !== carKey) { carKey = k; if (t) paintCover($('carArt'), t, t.album); else $('carArt').innerHTML = ''; }
+  }
+
+  /* ---------------- tidy up song info ---------------- */
+  var JUNK_RE = /\s*[\(\[](?:official\s*(?:music\s*)?(?:video|audio|lyric(?:s)?\s*video|visuali[sz]er)|lyric(?:s)?(?:\s*video)?|audio|video|hd|hq|4k|explicit|clean|\d{2,3}\s*kbps|free\s*download|visuali[sz]er)[\)\]]/gi;
+  function tidyText(s) {
+    if (!s) return s;
+    var o = s.replace(JUNK_RE, '')
+      .replace(/\b(?:www\.)?[a-z0-9-]+\.(?:com|net|org|info|io|co|ng|gh|me|cc|top|xyz)\b/gi, '')
+      .replace(/\s*[-–]\s*copy(?:\s*\(\d+\))?$/i, '')
+      .replace(/\s*\(\d\)$/, '')
+      .replace(/\s*\b\d{2,3}\s*kbps\b/gi, '')
+      .replace(/_/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/^[\s\-–|]+|[\s\-–|]+$/g, '')
+      .trim();
+    return o || s;
+  }
+  function tidyPlan() {
+    var plan = [];
+    state.tracks.forEach(function (t) {
+      if (t.offline) return;
+      var ch = {};
+      var title = tidyText(t.title);
+      var m = /^(\d{1,2})[\s.\-_]+(?=\D)(.+)$/.exec(title);
+      if (m && (!t.track || t.track === +m[1])) { title = m[2].trim(); if (!t.track) ch.track = +m[1]; }
+      // "Artist - Title" stuffed into the title tag
+      if (title.indexOf(' - ') > 0 && (t.artist === 'Unknown Artist' || title.toLowerCase().indexOf(t.artist.toLowerCase() + ' - ') === 0)) {
+        var a2 = title.slice(0, title.indexOf(' - ')).trim();
+        if (t.artist === 'Unknown Artist') ch.artist = a2;
+        title = title.slice(title.indexOf(' - ') + 3).trim();
+      }
+      if (title !== t.title) ch.title = title;
+      var artist = tidyText(ch.artist || t.artist);
+      if (artist !== t.artist) ch.artist = artist;
+      var album = tidyText(t.album);
+      if (album !== t.album) ch.album = album;
+      if (Object.keys(ch).length) plan.push({ t: t, ch: ch });
+    });
+    // albums split over several folders: same album name and the same artist → one album
+    var groups = new Map();
+    state.tracks.forEach(function (t) {
+      if (t.albumArtist || t.album === 'Unknown Album') return;
+      var k = t.album.toLowerCase();
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(t);
+    });
+    groups.forEach(function (list) {
+      var keys = new Set(list.map(function (t) { return t.albumKey; }));
+      var artists = new Set(list.map(function (t) { return artistOf(t).toLowerCase(); }));
+      if (keys.size < 2 || artists.size !== 1) return;
+      list.forEach(function (t) {
+        var p = plan.filter(function (x) { return x.t === t; })[0];
+        if (!p) { p = { t: t, ch: {} }; plan.push(p); }
+        p.ch.albumArtist = artistOf(t);
+        p.merge = true;
+      });
+    });
+    return plan;
+  }
+  var tidyBackup = null;
+  function openTidy() {
+    var plan = tidyPlan();
+    if (!plan.length) { toast('Your song info already looks tidy ✓', 2000); return; }
+    var merges = plan.filter(function (p) { return p.merge; }).length;
+    var show = plan.filter(function (p) { return p.ch.title || p.ch.artist || p.ch.album; }).slice(0, 40);
+    openModal('<h3>Tidy up song info</h3><p class="modal-sub">' + plural(plan.length, 'song') + ' can be cleaned up' + (merges ? ', including ' + plural(merges, 'song') + ' from albums split across folders' : '') +
+      '. Changes are saved in Tunebox — your files aren’t touched, and you can undo.</p>' +
+      '<div class="tidy-list">' + show.map(function (p) {
+        var f = p.ch.title ? 'title' : p.ch.artist ? 'artist' : 'album';
+        return '<div class="tidy-row"><s>' + esc(p.t[f]) + '</s><b>' + esc(p.ch[f]) + '</b></div>';
+      }).join('') + (plan.length > show.length ? '<div class="tidy-row more">…and ' + (plan.length - show.length) + ' more</div>' : '') + '</div>' +
+      '<div class="modal-actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="tidyGo">Tidy ' + plural(plan.length, 'song') + '</button></div>',
+      function (m) {
+        m.querySelector('#tidyGo').addEventListener('click', function () {
+          tidyBackup = {};
+          plan.forEach(function (p) {
+            tidyBackup[p.t.path] = { e: edits[p.t.path] ? JSON.parse(JSON.stringify(edits[p.t.path])) : null, o: { title: p.t.title, artist: p.t.artist, album: p.t.album, albumArtist: p.t.albumArtist, track: p.t.track } };
+            var e = edits[p.t.path] || (edits[p.t.path] = {});
+            Object.keys(p.ch).forEach(function (k) { e[k] = p.ch[k]; });
+            applyEdit(p.t);
+          });
+          idbSet('edits', edits);
+          closeModal();
+          invalidate();
+          renderAll();
+          updateNowPlaying();
+          toast('Tidied ' + plural(plan.length, 'song') + '. Undo it in Settings → Library.', 3500);
+        });
+      }, 'wide');
+  }
+  function undoTidy() {
+    if (!tidyBackup) return;
+    Object.keys(tidyBackup).forEach(function (path) {
+      var b = tidyBackup[path], t = state.byPath.get(path);
+      if (b.e) edits[path] = b.e; else delete edits[path];
+      if (t) { Object.keys(b.o).forEach(function (k) { t[k] = b.o[k]; }); computeAlbumKey(t); }
+    });
+    idbSet('edits', edits);
+    tidyBackup = null;
+    toast('Tidy-up undone', 1600);
+    invalidate();
+    renderAll();
+  }
+
+
   /* ------------------------------ events ------------------------------ */
 
   var COMMANDS = {
@@ -4365,6 +4901,11 @@
     fav: toggleFav,
     fullscreen: function () { showStage(!state.stage); },
     'np-lyrics': function () { toggleNpLyrics(); },
+    'lyrics-full': function () { showStage(true); setLyricsMode(true); },
+    output: function () { openOutput(); },
+    car: function () { openCar(); },
+    tidy: function () { openTidy(); },
+    'tidy-undo': function () { undoTidy(); renderSettings(); },
     eq: function () { toggleEqPanel(); },
     dj: function () { toggleDj(); },
     sleep: openSleepDialog,
@@ -4449,6 +4990,14 @@
       applyFx();
       renderEq();
     });
+  });
+  $('npvLive').addEventListener('click', function () { setLyricsMode(true); });
+  $('npvLyrics').addEventListener('click', function (e) {
+    var l = e.target.closest('.lyric-line');
+    if (!l || !state.lyrics || !state.lyrics.synced) return;
+    audio.currentTime = state.lyrics.lines[+l.getAttribute('data-li')].t;
+    userScrolledAt = 0;
+    if (audio.paused) play();
   });
   $('lyricsView').addEventListener('click', function (e) {
     var l = e.target.closest('.lyric-line');
@@ -4597,6 +5146,7 @@
     else if (k === 'f' || k === 'F') COMMANDS.fullscreen();
     else if (k === 'i' || k === 'I') toggleInspector();
     else if (k === ',') setView('settings');
+    else if (k === 'c' || k === 'C') { if (car) closeCar(); else openCar(); }
     else if (k === 'l' || k === 'L') toggleFav();
     else if (k === 'e' || k === 'E') toggleEqPanel();
     else if (k === 't' || k === 'T') toggleTheme();
@@ -4604,6 +5154,8 @@
       if (!$('ctxMenu').hidden) closeMenu();
       else if (!$('modalBack').hidden) closeModal();
       else if (!$('eqPanel').hidden) toggleEqPanel(false);
+      else if (car) closeCar();
+      else if (state.stage && state.lyricsMode) setLyricsMode(false);
       else if (state.stage) showStage(false);
     }
     else if (k === 'Enter' && state.selectedId) {
@@ -4673,6 +5225,7 @@
     get fading() { return !!fade; },
     get gain() { return deckGains ? deckGains[active].gain.value : null; },
     debugScan: function (h) { return scanHandle(h); },
+    debugLyrics: function () { return fetchOnlineLyrics(state.current); },
     connect: { get peers() { return peers; }, handleCode: handleCode, startHosting: startHosting, startParty: startParty, sendTracks: sendTracks, get remote() { return remotePeer; } }
   };
 })();
