@@ -12,6 +12,20 @@
     ['#ec6ead', '#7650c9'], ['#43cea2', '#185a9d'], ['#ff6e7f', '#bf5ae0'], ['#c79a5b', '#7a4b2a']
   ];
   var IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  // iPhone/iPad: stop Safari zooming in on its own (when typing, and after turning the phone).
+  // iOS still lets people pinch to zoom with this setting, so it doesn't take that away.
+  if (IS_IOS) {
+    var vpMeta = document.querySelector('meta[name="viewport"]');
+    var VP = 'width=device-width, initial-scale=1, viewport-fit=cover';
+    if (vpMeta) vpMeta.setAttribute('content', VP + ', maximum-scale=1');
+    var resetZoom = function () {
+      if (!vpMeta) return;
+      vpMeta.setAttribute('content', VP + ', maximum-scale=1, minimum-scale=1');
+      setTimeout(function () { vpMeta.setAttribute('content', VP + ', maximum-scale=1'); }, 300);
+    };
+    window.addEventListener('orientationchange', resetZoom);
+    if (window.screen && screen.orientation && screen.orientation.addEventListener) screen.orientation.addEventListener('change', resetZoom);
+  }
   var IS_ANDROID = /Android/i.test(navigator.userAgent);
   var IS_PHONE = IS_IOS || IS_ANDROID;
 

@@ -75,9 +75,17 @@
   }
 }
 
+/* safe areas: notch, Dynamic Island, rounded corners and home bar on iPhones */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+}
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; } /* no text zoom after rotating */
 html, body {
   margin: 0;
   height: 100%;
@@ -1063,7 +1071,7 @@ button:focus-visible { outline: 2px solid rgba(var(--tint), 0.7); outline-offset
     display: flex;
     border-width: 1px 0 0;
     background: var(--glass-strong);
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: var(--sab);
   }
   .tabbar button {
     flex: 1;
@@ -1313,7 +1321,7 @@ button:focus-visible { outline: 2px solid rgba(var(--tint), 0.7); outline-offset
     width: auto; max-width: none;
     max-height: 84vh;
     border-radius: 20px 20px 0 0;
-    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    padding-bottom: calc(12px + var(--sab));
   }
   .eq-presets { grid-template-columns: 1fr 1fr 1fr; }
   .eq-band { width: 28px; }
@@ -1439,7 +1447,7 @@ button:focus-visible { outline: 2px solid rgba(var(--tint), 0.7); outline-offset
 .browse-list button span { color: var(--text-3); font-size: 18px; }
 @media (max-width: 720px) {
   .modal-back { align-items: flex-end; padding: 0; }
-  .modal, .modal.wide { max-width: none; border-radius: 20px 20px 0 0; padding-bottom: calc(20px + env(safe-area-inset-bottom)); max-height: 88vh; }
+  .modal, .modal.wide { max-width: none; border-radius: 20px 20px 0 0; padding-bottom: calc(20px + var(--sab)); max-height: 88vh; }
   .fld-grid { grid-template-columns: 1fr; }
 }
 
@@ -1639,7 +1647,7 @@ body.view-remote #minibar { display: none; }
 @media (max-width: 980px) {
   .nowplaying.lyrics-mode .npv-inner {
     height: 100%; grid-template-columns: 60px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto;
-    -webkit-column-gap: 14px; column-gap: 14px; align-content: stretch; padding: 58px 18px calc(18px + env(safe-area-inset-bottom));
+    -webkit-column-gap: 14px; column-gap: 14px; align-content: stretch; padding: 58px 18px calc(18px + var(--sab));
   }
   .lyrics-mode .npv-art { grid-column: 1; grid-row: 1; width: 60px; height: 60px; border-radius: 10px; align-self: center; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3); }
   .lyrics-mode .npv-side { display: contents; }
@@ -1680,7 +1688,7 @@ body.view-remote #minibar { display: none; }
 /* car mode */
 .car-mode {
   position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 45; display: flex; flex-direction: column;
-  padding: calc(16px + env(safe-area-inset-top)) 24px calc(20px + env(safe-area-inset-bottom));
+  padding: calc(16px + var(--sat)) 24px calc(20px + var(--sab));
   background: radial-gradient(ellipse at 20% 10%, rgba(var(--tint), 0.55), transparent 60%), radial-gradient(ellipse at 90% 90%, rgba(var(--tint2), 0.45), transparent 55%), #07080c;
   color: #fff; -webkit-user-select: none; user-select: none;
 }
@@ -1711,7 +1719,7 @@ body.view-remote #minibar { display: none; }
   .car-btns button { width: 88px; height: 88px; }
   .car-btns .car-play { width: 116px; height: 116px; }
 }
-body.car-on .toast { bottom: auto; top: calc(86px + env(safe-area-inset-top)); }
+body.car-on .toast { bottom: auto; top: calc(86px + var(--sat)); }
 /* full screen on phones: never push the cover off the top; leave room for the lyric line */
 @media (max-width: 980px) {
   .nowplaying:not(.lyrics-mode) .npv-inner { justify-content: flex-start; overflow-y: auto; }
@@ -1721,7 +1729,7 @@ body.car-on .toast { bottom: auto; top: calc(86px + env(safe-area-inset-top)); }
   .lyrics-synced-on:not(.lyrics-mode) .npv-side { margin-top: 20px; }
 }
 /* messages go to the top while the full-screen player is open, away from the lyrics */
-body.stage-on .toast { bottom: auto; top: calc(18px + env(safe-area-inset-top)); }
+body.stage-on .toast { bottom: auto; top: calc(18px + var(--sat)); }
 
 /* big lyrics view: keep the left side calm — only the essentials */
 .lyrics-mode .npv-actions [data-cmd="dj"], .lyrics-mode .npv-actions [data-cmd="eq"], .lyrics-mode .npv-actions [data-cmd="sleep"],
@@ -1754,7 +1762,7 @@ body.stage-on .toast { bottom: auto; top: calc(18px + env(safe-area-inset-top));
   .out-pill { max-width: 52vw; height: 36px; }
   .car-round { width: 36px; height: 36px; }
 }
-@media (max-width: 720px) { body.stage-on .toast { top: calc(58px + env(safe-area-inset-top)); } }
+@media (max-width: 720px) { body.stage-on .toast { top: calc(58px + var(--sat)); } }
 .npv-ask { margin-top: 16px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--glass); font-size: 13px; color: var(--text-2); line-height: 1.4; }
 .npv-ask > div { display: flex; margin-top: 10px; }
 .npv-ask .btn + .btn { margin-left: 8px; }
@@ -1851,3 +1859,108 @@ body.seek-wave .seek.big .seek-wrap { height: 26px; }
 body.seek-wave .npv-side .seek.big .seek-wrap { height: 30px; }
 body.seek-fancy .seek.big .seek-times { margin-top: 4px; }
 body.radio-on .seek-wrap { display: none; }
+
+/* =====================================================================
+   Safe areas (iPhone notch / Dynamic Island / home bar, also in landscape)
+   ===================================================================== */
+.app {
+  padding-top: max(var(--gap), var(--sat));
+  padding-right: max(var(--gap), var(--sar));
+  padding-bottom: max(var(--gap), var(--sab));
+  padding-left: max(var(--gap), var(--sal));
+}
+.npv-close { top: calc(16px + var(--sat)); left: calc(18px + var(--sal)); }
+.npv-top { top: calc(16px + var(--sat)); right: calc(18px + var(--sar)); }
+.npv-inner { padding: max(48px, calc(var(--sat) + 40px)) max(48px, var(--sar)) max(48px, calc(var(--sab) + 24px)) max(48px, var(--sal)); }
+.nowplaying.lyrics-mode .npv-inner { padding: max(40px, calc(var(--sat) + 56px)) max(56px, calc(var(--sar) + 16px)) max(40px, var(--sab)) max(56px, calc(var(--sal) + 16px)); }
+.npv-live { bottom: calc(6vh + var(--sab)); }
+.eq-panel { top: calc(20px + var(--sat)); right: calc(24px + var(--sar)); max-height: calc(100vh - 130px - var(--sat)); }
+.modal-back { padding: max(16px, var(--sat)) max(16px, var(--sar)) max(16px, var(--sab)) max(16px, var(--sal)); }
+.modal { max-height: calc(100vh - 40px - var(--sat) - var(--sab)); }
+.car-mode { padding-left: max(24px, var(--sal)); padding-right: max(24px, var(--sar)); }
+.drop-overlay { margin: max(10px, var(--sat)) max(10px, var(--sar)) max(10px, var(--sab)) max(10px, var(--sal)); }
+@media (max-width: 1099px) {
+  .eq-panel { top: auto; bottom: calc(100px + var(--sab)); }
+}
+@media (max-width: 980px) {
+  .npv-inner { padding: calc(60px + var(--sat)) max(24px, var(--sar)) calc(24px + var(--sab)) max(24px, var(--sal)); }
+  .nowplaying.lyrics-mode .npv-inner { padding: calc(58px + var(--sat)) max(18px, var(--sar)) calc(18px + var(--sab)) max(18px, var(--sal)); }
+}
+@media (max-width: 720px) {
+  /* phones: the top bar (search, settings) starts below the status bar / notch */
+  .app { padding: var(--sat) var(--sar) 0 var(--sal); }
+  .npv-close { top: calc(10px + var(--sat)); left: calc(10px + var(--sal)); }
+  .npv-top { top: calc(10px + var(--sat)); right: calc(10px + var(--sar)); }
+  .modal-back { padding: var(--sat) var(--sar) 0 var(--sal); }
+  .modal, .modal.wide { max-height: calc(88vh - var(--sat)); }
+  .eq-panel { bottom: 0; max-height: calc(84vh - var(--sat)); }
+}
+/* landscape phones (sidebar layout): keep the bottom player and tab bar above the home bar */
+@media (max-height: 500px) and (orientation: landscape) {
+  .npv-inner { padding-top: calc(24px + var(--sat)); padding-bottom: calc(16px + var(--sab)); }
+  .npv-close, .npv-top { top: calc(10px + var(--sat)); }
+}
+/* iPhone: text boxes need 16px text, or Safari zooms in when you tap them (and stays zoomed after rotating) */
+@supports (-webkit-touch-callout: none) {
+  input[type="text"], input[type="search"], input:not([type]), textarea, select, .field { font-size: 16px !important; }
+}
+/* landscape phones and small windows: the bottom player must fit inside its box */
+@media (max-width: 900px) {
+  .player { grid-template-columns: minmax(140px, 1fr) minmax(240px, 1.6fr) auto; }
+  .vol .range { display: none; }
+}
+/* phones (portrait): size the cover by height too, so the controls never reach the home bar */
+@media (max-width: 720px) {
+  .nowplaying:not(.lyrics-mode) .npv-art { width: min(78vw, 36vh); height: min(78vw, 36vh); }
+  .npv-ask { padding: 10px 12px; font-size: 12.5px; }
+}
+/* landscape phones: cover on the left, controls on the right — no scrolling to reach them */
+@media (max-height: 500px) and (orientation: landscape) {
+  .nowplaying:not(.lyrics-mode) .npv-inner { flex-direction: row; justify-content: center; align-items: center; overflow-y: auto; }
+  .nowplaying:not(.lyrics-mode) .npv-art { width: min(62vh, 38vw); height: min(62vh, 38vw); margin: auto 0; }
+  .nowplaying:not(.lyrics-mode) .npv-side { margin: auto 0 auto 32px; width: auto; flex: 1; max-width: 440px; }
+  .npv-title { font-size: 22px; }
+  .npv-side .seek.big { margin-top: 12px; }
+  .npv-side .buttons.big { margin-top: 6px; }
+  .npv-side .buttons.big .play-btn { width: 54px; height: 54px; }
+  .npv-actions { margin-top: 10px; }
+  .npv-live { min-height: 0; margin-top: 10px; }
+  .live-cur { font-size: 17px; }
+  .npv-ask { margin-top: 10px; }
+}
+/* short phone screens (iPhone X/11/12 mini, Safari with toolbars): keep everything reachable without scrolling */
+@media (max-width: 720px) and (max-height: 860px) {
+  .nowplaying:not(.lyrics-mode) .npv-art { width: min(72vw, 31vh); height: min(72vw, 31vh); }
+  .lyrics-synced-on:not(.lyrics-mode) .npv-art { width: min(64vw, 27vh); height: min(64vw, 27vh); }
+  .npv-next { display: none; }
+  .ask-long { display: none; }
+  .npv-ask { display: flex; align-items: center; margin-top: 12px; }
+  .npv-ask > span { flex: 1; }
+  .npv-ask > div { margin: 0 0 0 10px; flex: none; }
+  body.seek-waveform .npv-side .seek.big .seek-wrap { height: 44px; }
+  .npv-side .seek.big { margin-top: 16px; }
+  .npv-side .buttons.big { margin-top: 8px; }
+  .npv-side .buttons.big .play-btn { width: 60px; height: 60px; }
+  .npv-actions { margin-top: 10px; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  .npv-ask, .npv-next { display: none !important; }
+  .nowplaying:not(.lyrics-mode) .npv-art { width: min(58vh, 36vw); height: min(58vh, 36vw); }
+  body.seek-waveform .npv-side .seek.big .seek-wrap { height: 34px; }
+  .npv-title { font-size: 20px; -webkit-line-clamp: 1; }
+  .npv-sub { font-size: 14px; }
+  .npv-side .buttons.big .play-btn { width: 50px; height: 50px; }
+  .npv-actions .chip-btn { padding-top: 5px; padding-bottom: 5px; }
+}
+/* the smallest iPhones (SE, 320 px wide) */
+@media (max-width: 360px) {
+  .player { margin: 0 6px 6px; padding: 0 6px; }
+  .np-art { width: 40px; height: 40px; margin-right: 8px; }
+}
+@media (max-width: 720px) and (max-height: 620px) {
+  .nowplaying:not(.lyrics-mode) .npv-art { width: min(58vw, 25vh); height: min(58vw, 25vh); }
+  .nowplaying:not(.lyrics-mode) .npv-inner { padding-top: calc(52px + var(--sat)); }
+  .npv-title { font-size: 20px; }
+  body.seek-waveform .npv-side .seek.big .seek-wrap { height: 36px; }
+  .npv-side .seek.big { margin-top: 10px; }
+}
