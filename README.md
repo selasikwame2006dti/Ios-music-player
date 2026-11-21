@@ -15,6 +15,8 @@ Even when opened from that web address, your music is never uploaded. The page o
 
 ## How to use it
 
+**New here?** Tunebox offers a one-minute guided tour the first time you open it. It highlights each button and tells you what it does. Take it again any time from **Settings → Help**, where there's also a tour of the full-screen player and a list of keyboard shortcuts.
+
 1. Open Tunebox in your browser.
    - **Google Chrome** is recommended. It can remember your music folder between visits.
    - **Safari** works too, but you have to choose your folder again each time.
