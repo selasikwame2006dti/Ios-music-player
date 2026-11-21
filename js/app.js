@@ -2910,6 +2910,11 @@
     var cached = metaCache ? metaCache.size : 0;
 
     v.innerHTML =
+      sCard('Help', 'New here, or want a refresher? Tunebox can show you around.',
+        sRow('Take the tour', 'A one-minute walk through Tunebox that shows you where to ' + TAP.toLowerCase() + '.', sBtn('Start tour', 'data-cmd="tour"', true)) +
+        sRow('Full-screen player tour', 'What every button on the big player does.', sBtn('Start', 'data-cmd="tour-player"')) +
+        (IS_PHONE ? '' : sRow('Keyboard shortcuts', 'Control Tunebox without the mouse.', sBtn('Show', 'data-cmd="shortcuts"')))) +
+
       sCard('Appearance', 'Make Tunebox look the way you like.',
         sRow('Theme', 'Auto follows your Mac.', sSeg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], theme)) +
         sRow('Accent colour', accent === 'art' ? 'Colours come from the album art.' : 'Fixed colour.', swatches) +
@@ -4201,7 +4206,7 @@
     var items = [
       ['albums', 'Albums', 'view'], ['artists', 'Artists', 'view'], ['playlists', 'Playlists', 'view'], ['favorites', 'Favourites', 'view'],
       ['queue', 'Up Next', 'view'], ['stats', 'Listening Stats', 'view'], ['eq', 'Equalizer & Vibes', 'cmd'], ['sleep', 'Sleep timer', 'cmd'],
-      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['radio', 'Radio', 'view'], ['car', 'Car mode', 'cmd'], ['output', 'Play on… / Cast', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
+      ['open-folder', IS_IOS ? 'Add songs' : 'Add a music folder', 'cmd'], ['rescan', 'Check for new songs', 'cmd'], ['radio', 'Radio', 'view'], ['car', 'Car mode', 'cmd'], ['tour', 'Help & tour', 'cmd'], ['output', 'Play on… / Cast', 'cmd'], ['connect', 'Connect devices', 'view'], ['sync', 'Copy settings to another device', 'cmd'], ['add-files', 'Add songs', 'cmd']
     ].filter(function (it) { return !(IS_IOS && it[0] === 'open-folder'); });
     openModal('<h3>Browse</h3><div class="browse-list">' + items.map(function (it) {
       return '<button ' + (it[2] === 'view' ? 'data-view="' + it[0] + '"' : 'data-cmd="' + it[0] + '"') + ' data-close>' + it[1] + '<span>›</span></button>';
@@ -6168,6 +6173,275 @@
   $$('.seek-range').forEach(function (r) { r.addEventListener('input', function () { seekLoop(true); }); });
 
 
+  /* =====================================================================
+     Guided tour — hands-on. It spotlights one thing at a time; on "try it"
+     steps you really tap the control and the tour moves on when you do, and
+     the things you can customise can be changed right in the tour card.
+     Offered once per device; any time again from Settings → Help.
+     ===================================================================== */
+  function visibleEl(sels) {
+    for (var i = 0; i < sels.length; i++) {
+      var list = document.querySelectorAll(sels[i]);
+      for (var j = 0; j < list.length; j++) {
+        var el = list[j], r = el.getBoundingClientRect();
+        if (el.offsetParent !== null && r.width > 4 && r.height > 4 && getComputedStyle(el).visibility !== 'hidden') return el;
+      }
+    }
+    return null;
+  }
+  var TAP = IS_PHONE || (window.matchMedia && matchMedia('(pointer: coarse)').matches) ? 'Tap' : 'Click';
+  function hasSongs() { return state.tracks.some(function (t) { return !t.offline; }); }
+  function playingNow() { return !!state.current && !audio.paused; }
+
+  // little controls shown inside the tour card; they change the setting straight away
+  function tSeg(key, opts, cur) {
+    return '<div class="seg tour-seg">' + opts.map(function (o) {
+      return '<button data-tset="' + key + '" data-val="' + o[0] + '"' + (String(cur) === String(o[0]) ? ' class="on"' : '') + '>' + o[1] + '</button>';
+    }).join('') + '</div>';
+  }
+  function tSwatches() {
+    var cur = settings.accent || 'art';
+    return '<div class="swatches tour-sw"><button data-tset="accent" data-val="art" class="sw-art' + (cur === 'art' ? ' on' : '') + '" title="From the album art"></button>' +
+      Object.keys(ACCENTS).map(function (k) {
+        var a = ACCENTS[k];
+        return '<button data-tset="accent" data-val="' + k + '"' + (cur === k ? ' class="on"' : '') + ' title="' + k + '" style="background:linear-gradient(135deg,rgb(' + a[0].join(',') + '),rgb(' + a[1].join(',') + '))"></button>';
+      }).join('') + '</div>';
+  }
+  function applyTourSetting(key, val) {
+    if (key === 'crossfade') { settings.crossfade = +val; saveSettings(); }
+    else if (key === 'lyricsOnline') { settings.lyricsOnline = val === 'on'; applySetting('lyricsOnline', settings.lyricsOnline); }
+    else {
+      if (key !== 'theme') settings[key] = val;
+      applySetting(key, val);
+    }
+    if (state.view === 'settings') renderSettings();
+  }
+
+  var TOURS = {
+    app: [
+      { title: 'Welcome to Tunebox 👋', text: function () { return 'Tunebox plays the music saved on your ' + (IS_PHONE ? 'phone' : 'computer') + ' — no account, no uploads, and it works offline. Let’s look around: on some steps you’ll try things yourself.'; } },
+      { el: ['#btnEmptyOpen', '.sidebar [data-cmd="open-folder"]', '.tabbar [data-cmd="browse"]'], when: function () { return !hasSongs(); }, try: true, wait: hasSongs, next: 'Skip for now',
+        title: 'Add your music', text: TAP + ' the highlighted button and pick the folder where your songs are' + (IS_IOS ? ' (or pick songs in the Files app)' : '') + '. Nothing is uploaded. I’ll wait — the tour carries on when your songs appear.' },
+      { el: ['#search', '#search2'], title: 'Search', text: 'Type a song, artist or album to find it straight away.' },
+      { el: ['.sidebar nav', '.tabbar'], title: IS_PHONE ? 'Get around' : 'Your library', text: IS_PHONE ? 'Songs, Browse (albums, artists, playlists, EQ, Connect devices and more), the DJ, your liked songs and Radio.' : 'Songs, albums, artists, favourites, playlists and your listening stats.' },
+      { el: ['#songList .row'], when: hasSongs, try: true, wait: playingNow, next: 'Skip',
+        title: 'Try it: play a song', text: (IS_PHONE ? 'Tap this song' : 'Double-click this song') + ' to play it. ' + (IS_PHONE ? 'Tap ⋯' : 'Right-click it, or click ⋯,') + ' for more: play next, add to a playlist, start the DJ from it, or fix its name.' },
+      { el: ['#inspector .play-btn', '#minibar .play-btn'], when: playingNow, try: true, wait: function () { return audio.paused; }, next: 'Skip',
+        title: 'Try it: pause', text: TAP + ' pause. Next and previous are right beside it.' + (IS_PHONE ? '' : ' (Shortcut: Space.)') },
+      { el: ['#inspector .seek-wrap', '#minibar .seek-wrap'], when: function () { return !!state.current; }, title: 'The song’s shape',
+        text: 'The bar shows the loud and quiet parts of the song — ' + TAP.toLowerCase() + ' or drag anywhere on it to jump. Pick the style you like:',
+        controls: function () { return tSeg('seekStyle', [['waveform', 'Waveform'], ['wave', 'Wave'], ['classic', 'Classic']], seekStyle()); } },
+      { el: ['#stArt', '#npOpen'], when: function () { return !!state.current; }, try: true, wait: function () { return state.stage; }, next: 'Skip',
+        title: 'Try it: the big player', text: TAP + ' here to open the full-screen player.' },
+      { el: ['#npStage .out-pill'], when: function () { return state.stage; }, title: 'Where it’s playing', text: 'Shows the speaker or headphones playing the sound. ' + TAP + ' it any time to switch speakers' + (IS_PHONE ? ' or see how to cast' : '') + '.' },
+      { el: ['#npStage .car-round'], when: function () { return state.stage; }, title: 'Car mode', text: 'Huge buttons for driving: swipe to skip, tap the cover to pause.' },
+      { el: ['#npStage [data-cmd="np-lyrics"]'], when: function () { return state.stage; }, title: 'Lyrics',
+        text: 'Lyrics show with each word lighting up as it’s sung. Most songs don’t include timed lyrics — Tunebox can find them online (only the song’s name is sent) and keep them for offline.',
+        controls: function () { return tSeg('lyricsOnline', [['on', 'Find lyrics online'], ['off', 'No thanks']], settings.lyricsOnline ? 'on' : (settings.lyricsOnline === false ? 'off' : '')); } },
+      { el: ['#npStage .npv-close'], when: function () { return state.stage; }, try: true, wait: function () { return !state.stage; }, next: 'Skip',
+        title: 'Try it: close it', text: TAP + ' here to close the big player (or press Esc). The music keeps playing.', after: function () { if (state.stage) showStage(false); } },
+      { el: ['.sidebar .dj-nav', '.tabbar .tab-dj'], title: 'Tunebox DJ ✦', text: 'An endless mix chosen from your own library. It learns from what you play and skip — no internet needed. When songs change, how long should they blend?',
+        controls: function () { var x = typeof settings.crossfade === 'number' ? settings.crossfade : 0; return tSeg('crossfade', [[0, 'No fade'], [4, '4 s'], [8, '8 s'], [12, '12 s']], x); } },
+      { el: ['.sidebar [data-cmd="eq"]', '#inspector [data-cmd="eq"]', '.tabbar [data-cmd="browse"]'], title: 'Equalizer & vibes', text: '10-band equalizer, bass boost, and vibes like Slowed + Reverb or Nightcore' + (IS_PHONE ? ' — it’s in Browse.' : '.') },
+      { el: ['.sidebar [data-view="radio"]', '.tabbar [data-view="radio"]'], title: 'Radio', text: 'Free live stations from around the world. ♥ a song you hear and it’s saved to “Heard on radio” so you can find it later.' },
+      { el: ['.sidebar [data-view="connect"]', '.tabbar [data-cmd="browse"]'], title: 'Connect your devices', text: IS_PHONE ? 'In Browse you’ll also find Connect devices: use your phone as a remote for your PC, send songs, or let friends add songs at a party.' : 'Use your phone as a remote, send songs between devices, or let friends add songs at a party — even over a phone hotspot.' },
+      { title: 'Make it yours 🎨', text: 'Light or dark?', controls: function () { return tSeg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], settings.theme || 'auto'); } },
+      { title: 'Pick a colour', text: 'The rainbow one takes its colours from each song’s album art.', controls: tSwatches },
+      { el: ['.sidebar [data-view="settings"]', '.top-settings'], title: 'Everything else is in Settings', text: 'All of this — and much more — can be changed any time in Settings. You can take this tour again from Settings → Help.' },
+      { title: 'You’re all set 🎶', text: function () { return (hasSongs() ? 'Enjoy your music!' : 'Start by adding your music.') + ' Tip: install Tunebox from your browser menu so it opens like a normal app.'; } }
+    ],
+    player: [
+      { title: 'The full-screen player', text: 'Here’s what everything does on the big player.', before: function () { if (state.current || radio.on) showStage(true); } },
+      { el: ['#npStage .npv-close'], title: 'Close', text: TAP + ' here (or press Esc) to go back to your library. The music keeps playing.' },
+      { el: ['#npStage .out-pill'], title: 'Where it’s playing', text: 'Shows the speaker or headphones playing the sound. ' + TAP + ' it to switch speakers' + (IS_PHONE ? ' or see how to cast' : '') + '.' },
+      { el: ['#npStage .car-round'], title: 'Car mode', text: 'Huge buttons for driving: swipe left or right to skip, tap the cover to pause.' },
+      { el: ['#npStage .seek-wrap'], title: 'Jump around the song', text: TAP + ' or drag anywhere on the bar. Its style:', controls: function () { return tSeg('seekStyle', [['waveform', 'Waveform'], ['wave', 'Wave'], ['classic', 'Classic']], seekStyle()); } },
+      { el: ['#npStage .buttons.big'], title: 'Controls', text: 'Shuffle, previous, play/pause, next and repeat.' },
+      { el: ['#npvLive'], title: 'The line being sung', text: 'The current line, word by word, with the next line under it. ' + TAP + ' it for the full lyrics.' },
+      { el: ['#npStage [data-cmd="np-lyrics"]'], title: 'Lyrics', text: 'Opens the full lyrics. ' + TAP + ' any line to jump to it.' },
+      { el: ['#npStage .npv-actions'], title: 'More', text: 'Start the DJ, like the song, open the equalizer, set a sleep timer, and more.' },
+      { title: 'That’s the player ✓', text: 'Press Esc or ' + TAP.toLowerCase() + ' the arrow at the top to close it.' }
+    ]
+  };
+
+  var tour = null;
+  function startTour(name) {
+    if (name === 'player' && !state.current && !radio.on) { toast('Play a song first, then start the full-screen tour.', 2600); return; }
+    closeModal();
+    settings.tourSeen = true;
+    saveSettings();
+    if (name === 'app' && state.stage) showStage(false);
+    if (name === 'app' && state.view !== 'songs' && hasSongs()) setView('songs');
+    tour = { name: name, steps: TOURS[name], i: -1, dir: 1 };
+    if (!$('tour')) {
+      var t = document.createElement('div');
+      t.id = 'tour';
+      t.innerHTML = '<div class="tour-block b-top"></div><div class="tour-block b-left"></div><div class="tour-block b-right"></div><div class="tour-block b-bottom"></div>' +
+        '<div class="tour-spot"><span class="tour-hand" aria-hidden="true">👆</span></div>' +
+        '<div class="tour-card" role="dialog" aria-live="polite"><div class="tour-step"></div><h4></h4><p></p><div class="tour-ctl"></div>' +
+        '<div class="tour-btns"><button class="link-btn tour-skip">Skip tour</button><span class="spacer"></span><button class="btn small tour-back">Back</button><button class="btn small primary tour-next">Next</button></div></div>';
+      document.body.appendChild(t);
+      t.querySelector('.tour-skip').onclick = function () { endTour(); };
+      t.querySelector('.tour-back').onclick = function () { tourGo(-1); };
+      t.querySelector('.tour-next').onclick = function () { tourGo(1); };
+      $$('#tour .tour-block').forEach(function (b) { b.onclick = function () { if (tour && !tour.step.try) tourGo(1); else nudgeTour(); }; });
+      t.querySelector('.tour-ctl').onclick = function (e) {
+        var b = e.target.closest('[data-tset]');
+        if (!b) return;
+        applyTourSetting(b.getAttribute('data-tset'), b.getAttribute('data-val'));
+        renderTourControls();
+      };
+    }
+    $('tour').hidden = false;
+    document.body.classList.add('touring');
+    tourGo(1);
+    clearInterval(tourTimer);
+    tourTimer = setInterval(tourTick, 250);
+  }
+  var tourTimer = null;
+  function nudgeTour() {
+    var c = $('tour').querySelector('.tour-card');
+    c.classList.remove('nudge');
+    void c.offsetWidth;
+    c.classList.add('nudge');
+  }
+  // move to the next (or previous) step that makes sense right now
+  function tourGo(d) {
+    if (!tour) return;
+    if (tour.step && tour.step.after && d > 0) tour.step.after();
+    var i = tour.i;
+    for (;;) {
+      i += d;
+      if (i >= tour.steps.length) { endTour(true); return; }
+      if (i < 0) return;
+      var s = tour.steps[i];
+      if (s.before) s.before();
+      if (s.when && !s.when()) continue;
+      if (s.el && !visibleEl(s.el)) continue;
+      break;
+    }
+    tour.i = i;
+    tour.step = tour.steps[i];
+    tour.shownAt = Date.now();
+    showTourStep();
+  }
+  function endTour(done) {
+    if (!tour) return;
+    clearInterval(tourTimer);
+    settings.tourSeen = true;
+    saveSettings();
+    if (done && tour.name === 'app') toast('Take the tour again any time: Settings → Help', 2600);
+    tour = null;
+    $('tour').hidden = true;
+    document.body.classList.remove('touring');
+  }
+  function renderTourControls() {
+    var s = tour.step, box = $('tour').querySelector('.tour-ctl');
+    box.innerHTML = s.controls ? s.controls() : '';
+    box.hidden = !s.controls;
+    if (s.controls) box.insertAdjacentHTML('beforeend', '<div class="tour-later">You can change this later in Settings.</div>');
+  }
+  function showTourStep() {
+    var s = tour.step, box = $('tour');
+    tour.el = s.el ? visibleEl(s.el) : null;
+    if (tour.el && tour.el.scrollIntoView) {
+      var rr = tour.el.getBoundingClientRect();
+      if (rr.top < 60 || rr.bottom > window.innerHeight - 60) tour.el.scrollIntoView({ block: 'center' });
+    }
+    box.querySelector('.tour-step').innerHTML = (s.try ? 'Try it · ' : '') + 'Step ' + (tour.i + 1) +
+      '<span class="tour-prog"><i style="width:' + Math.round((tour.i + 1) / tour.steps.length * 100) + '%"></i></span>';
+    box.querySelector('h4').textContent = s.title;
+    box.querySelector('p').textContent = typeof s.text === 'function' ? s.text() : s.text;
+    renderTourControls();
+    box.querySelector('.tour-back').hidden = tour.i === 0;
+    box.querySelector('.tour-next').textContent = s.next || (tour.i === tour.steps.length - 1 ? 'Done' : 'Next');
+    box.classList.toggle('trying', !!s.try);
+    var card = box.querySelector('.tour-card');
+    card.classList.remove('enter');
+    void card.offsetWidth;
+    card.classList.add('enter');
+    placeTour();
+    setTimeout(placeTour, 80);
+  }
+  // keeps the spotlight on its target, and moves on by itself when you've done the "try it"
+  function tourTick() {
+    if (!tour || !tour.step) return;
+    var s = tour.step;
+    if (s.wait && Date.now() - tour.shownAt > 300 && s.wait()) { setTimeout(function () { if (tour && tour.step === s) tourGo(1); }, 450); tour.shownAt = Infinity; return; }
+    if (s.el && (!tour.el || !document.body.contains(tour.el) || !tour.el.offsetParent)) tour.el = visibleEl(s.el);
+    placeTour();
+  }
+  function placeTour() {
+    if (!tour) return;
+    var box = $('tour'), spot = box.querySelector('.tour-spot'), card = box.querySelector('.tour-card'), el = tour.el;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var cs = getComputedStyle(document.documentElement);
+    var sat = parseFloat(cs.getPropertyValue('--sat')) || 0, sab = parseFloat(cs.getPropertyValue('--sab')) || 0;
+    var cw = Math.min(350, vw - 24);
+    card.style.width = cw + 'px';
+    var blocks = box.querySelectorAll('.tour-block');
+    if (!el) {
+      spot.hidden = true;
+      box.classList.add('centered');
+      blocks[0].style.cssText = 'left:0;top:0;width:100%;height:100%';
+      for (var b = 1; b < 4; b++) blocks[b].style.cssText = 'display:none';
+      card.style.left = Math.round((vw - cw) / 2) + 'px';
+      card.style.top = Math.round(Math.max(sat + 12, (vh - card.offsetHeight) / 2)) + 'px';
+      return;
+    }
+    box.classList.remove('centered');
+    var r = el.getBoundingClientRect(), pad = 6;
+    var L = r.left - pad, T = r.top - pad, W = r.width + pad * 2, H = r.height + pad * 2;
+    spot.hidden = false;
+    spot.style.left = L + 'px'; spot.style.top = T + 'px'; spot.style.width = W + 'px'; spot.style.height = H + 'px';
+    // four click-catchers around the spotlight: on "try it" steps the highlighted control itself stays tappable
+    if (tour.step.try) {
+      blocks[0].style.cssText = 'left:0;top:0;width:100%;height:' + Math.max(0, T) + 'px';
+      blocks[1].style.cssText = 'left:0;top:' + T + 'px;width:' + Math.max(0, L) + 'px;height:' + H + 'px';
+      blocks[2].style.cssText = 'left:' + (L + W) + 'px;top:' + T + 'px;right:0;height:' + H + 'px';
+      blocks[3].style.cssText = 'left:0;top:' + (T + H) + 'px;width:100%;bottom:0';
+    } else {
+      blocks[0].style.cssText = 'left:0;top:0;width:100%;height:100%';
+      for (var k = 1; k < 4; k++) blocks[k].style.cssText = 'display:none';
+    }
+    var ch = card.offsetHeight, gap = 16, top;
+    if (r.bottom + gap + ch < vh - sab - 8) top = r.bottom + gap;
+    else if (r.top - gap - ch > sat + 8) top = r.top - gap - ch;
+    else top = Math.max(sat + 8, Math.min(vh - sab - ch - 8, r.top + r.height / 2 - ch / 2));
+    var left = Math.max(12, Math.min(vw - cw - 12, r.left + r.width / 2 - cw / 2));
+    if (top < r.bottom && top + ch > r.top) {
+      if (r.right + gap + cw < vw - 8) left = r.right + gap;
+      else if (r.left - gap - cw > 8) left = r.left - gap - cw;
+    }
+    card.style.left = Math.round(left) + 'px';
+    card.style.top = Math.round(top) + 'px';
+  }
+  window.addEventListener('resize', function () { if (tour) placeTour(); });
+  document.addEventListener('keydown', function (e) {
+    if (!tour) return;
+    if (e.key === 'Escape') { e.stopImmediatePropagation(); e.preventDefault(); endTour(); }
+    else if (e.key === 'ArrowRight' || (e.key === 'Enter' && !tour.step.try)) { e.stopImmediatePropagation(); e.preventDefault(); tourGo(1); }
+    else if (e.key === 'ArrowLeft') { e.stopImmediatePropagation(); e.preventDefault(); tourGo(-1); }
+  }, true);
+  // offered once on this device — as soon as it's shown, even if the app is closed straight after
+  function maybeOfferTour() {
+    if (settings.tourSeen || /[#&?](join|sync|shared)=/.test(location.href) || !$('modalBack').hidden || remotePeer) return;
+    settings.tourSeen = true;
+    saveSettings();
+    openModal('<div class="welcome-art"><span class="logo"><svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M9 18.5a3.5 3.5 0 1 1-2-3.16V5.6a1 1 0 0 1 .76-.97l11-2.75A1 1 0 0 1 20 2.85V16.5a3.5 3.5 0 1 1-2-3.16V7.28l-9 2.25z"/></svg></span></div>' +
+      '<h3 class="welcome-title">Welcome to Tunebox</h3><p class="modal-sub welcome-sub">Your music, played beautifully — right from your own ' + (IS_PHONE ? 'phone' : 'computer') + '. Want a quick, hands-on tour? You’ll try things as you go and set it up the way you like.</p>' +
+      '<div class="modal-actions welcome-actions"><button class="btn" id="tourLater">Not now</button><button class="btn primary" id="tourGo">Show me around</button></div>',
+      function (m) {
+        m.querySelector('#tourGo').onclick = function () { startTour('app'); };
+        m.querySelector('#tourLater').onclick = function () { closeModal(); toast('You can take the tour any time from Settings → Help', 2600); };
+      });
+  }
+  function showShortcuts() {
+    var rows = [['Space', 'Play / pause'], ['← / →', 'Back / forward 5 seconds'], ['Shift + ← / →', 'Previous / next song'], ['↑ / ↓', 'Volume'], ['/', 'Search'], ['S', 'Shuffle'], ['R', 'Repeat'], ['M', 'Mute'], ['L', 'Like the song'], ['F', 'Full-screen player'], ['D', 'Tunebox DJ'], ['E', 'Equalizer'], ['I', 'Up Next / Lyrics'], ['C', 'Car mode'], ['T', 'Light / dark'], [',', 'Settings'], ['Esc', 'Close']];
+    openModal('<h3>Keyboard shortcuts</h3><div class="keys">' + rows.map(function (r) { return '<div><kbd>' + esc(r[0]) + '</kbd><span>' + esc(r[1]) + '</span></div>'; }).join('') + '</div><div class="modal-actions"><button class="btn primary" data-close>Done</button></div>', null, 'wide');
+  }
+
+
   /* ------------------------------ events ------------------------------ */
 
   var COMMANDS = {
@@ -6189,6 +6463,9 @@
     output: function () { openOutput(); },
     car: function () { openCar(); },
     tidy: function () { openTidy(); },
+    tour: function () { startTour('app'); },
+    'tour-player': function () { startTour('player'); },
+    shortcuts: function () { showShortcuts(); },
     'lyrics-dl': function () { downloadAllLyrics(false); },
     'lyrics-dl-stop': function () { lyrDl.stop = true; },
     'tidy-undo': function () { undoTidy(); renderSettings(); },
@@ -6524,6 +6801,7 @@
   receiveJoin();
   window.addEventListener('hashchange', receiveJoin);
   applySeekStyle();
+  setTimeout(maybeOfferTour, 1200);
 
   // exposed for debugging in the console
   window.Tunebox = {
