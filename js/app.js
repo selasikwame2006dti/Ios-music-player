@@ -1159,6 +1159,7 @@
     saveLast();
     ensurePeaks(t, IS_PHONE ? 2500 : 600);
     seekLoop(true);
+    setTimeout(prefetchQueueLyrics, 6000);
   }
 
   function loadTrack(t, autoplay, startAt) {
@@ -2831,6 +2832,11 @@
   }
 
   function renderSettings() {
+    renderSettingsPage();
+    renderLyrDl();
+    if (!lyricsCache) lyricsCacheGet().then(renderLyrDl);
+  }
+  function renderSettingsPage() {
     var v = $('settingsView');
     if (state.view !== 'settings') return;
     var theme = settings.theme || 'auto';
@@ -2862,7 +2868,8 @@
         sRow('Soft pause', 'Fade out/in on pause and play.', sSwitch('softPause')) +
         sRow('Gapless playback', 'No silence between songs when crossfade is off — great for live albums and mixes.', sSwitch('gapless')) +
         sRow('Play on', canSink ? (settings.sinkLabel || 'System default') : 'Use your device’s sound menu to pick a speaker.', sBtn(canSink ? 'Choose…' : 'Cast…', 'data-cmd="output"')) +
-        sRow('Find missing lyrics online', 'Looks up lyrics on lrclib.net (free) when a song has none. Only the title, artist and length are sent.', sSwitch('lyricsOnline')) +
+        sRow('Find missing lyrics online', 'Looks up lyrics on lrclib.net (free) when a song has none, and saves them so they work offline. Only the title, artist and length are sent.', sSwitch('lyricsOnline')) +
+        '<div class="set-row" id="lyrDlRow"><div class="set-text"><div class="set-title">Lyrics for offline</div><div class="set-desc"></div></div><div class="set-ctl"></div></div>' +
         sRow('Word-by-word lyrics', 'Light up each word as it’s sung. Exact with word-timed .lrc files; otherwise Tunebox estimates it from each line.', sSwitch('lyricWords')) +
         sRow('Vibe', vibe, '<div class="vibe-chips">' + Object.keys(VIBES).map(function (k) {
           return '<button data-vibe="' + k + '"' + (vibeKey() === k ? ' class="on"' : '') + '>' + VIBES[k].name + '</button>';
@@ -2914,7 +2921,7 @@
     switch (key) {
       case 'lyricWords': renderLyrics(); break;
       case 'seekStyle': applySeekStyle(); break;
-      case 'lyricsOnline': if (val && state.current && !state.lyrics) onlineLyricsFor(state.current); break;
+      case 'lyricsOnline': if (val && state.current && !state.lyrics) onlineLyricsFor(state.current); if (val) setTimeout(autoLyricsDownload, 3000); break;
       case 'gapless': resetGapless(); break;
       case 'theme':
         if (val === 'auto') delete settings.theme; else settings.theme = val;
@@ -5072,8 +5079,90 @@
     if (lyricsCache) return Promise.resolve(lyricsCache);
     return idbGet('lyricsCache').then(function (c) { lyricsCache = c || {}; return lyricsCache; }, function () { lyricsCache = {}; return lyricsCache; });
   }
-  var saveLyricsCache = debounce(function () { idbSet('lyricsCache', lyricsCache); }, 1500);
+  // saved at most every 2 seconds, but always saved (a steady stream of new lyrics must not keep postponing it)
+  var lyricsSaveTimer = null;
+  function flushLyricsCache() { clearTimeout(lyricsSaveTimer); lyricsSaveTimer = null; if (lyricsCache) return idbSet('lyricsCache', lyricsCache); }
+  function saveLyricsCache() { if (!lyricsSaveTimer) lyricsSaveTimer = setTimeout(flushLyricsCache, 2000); }
+  document.addEventListener('visibilitychange', function () { if (document.hidden && lyricsSaveTimer) flushLyricsCache(); });
+  window.addEventListener('pagehide', function () { if (lyricsSaveTimer) flushLyricsCache(); });
   function lyricsOnlineAuto() { return settings.lyricsOnline === true; }
+
+  /* ---------------- lyrics saved for offline ----------------
+     Lyrics found online are kept on this device, so they (and the word-by-word
+     highlighting, which runs on the device) work without internet. This saves them
+     ahead of time: for the whole library on request, and for the next songs in the queue. */
+  var lyrDl = { running: false, stop: false, done: 0, total: 0, found: 0 };
+  function lyricsSavedCount() {
+    if (!lyricsCache) return 0;
+    var n = 0;
+    Object.keys(lyricsCache).forEach(function (k) { if (lyricsCache[k] && lyricsCache[k].txt) n++; });
+    return n;
+  }
+  function needsLyricsLookup(t, cache) {
+    if (!t || t.offline || !t.title) return false;
+    var hit = cache[trackKey(t)];
+    if (hit && hit.txt) return false;
+    if (hit && hit.none && Date.now() - hit.at < 30 * 864e5) return false;
+    var lrc = state.lrcFiles.get(t.path.replace(/\.[^.\/]+$/, '').toLowerCase());
+    return !lrc; // a .lrc file next to the song always wins
+  }
+  function onMeteredData() {
+    var c = navigator.connection;
+    return !!(c && (c.saveData || c.type === 'cellular'));
+  }
+  async function downloadAllLyrics(quiet) {
+    if (lyrDl.running) return;
+    if (navigator.onLine === false) { if (!quiet) toast('Connect to the internet to download lyrics.', 2600); return; }
+    var cache = await lyricsCacheGet();
+    var list = state.tracks.filter(function (t) { return needsLyricsLookup(t, cache); });
+    if (!list.length) { if (!quiet) toast('Lyrics are already saved for every song we could find ✓', 2400); return; }
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {}); // ask the browser not to clear them
+    lyrDl = { running: true, stop: false, done: 0, total: list.length, found: 0, quiet: quiet };
+    renderLyrDl();
+    for (var i = 0; i < list.length && !lyrDl.stop; i++) {
+      if (navigator.onLine === false) break;
+      var t = list[i], before = cache[trackKey(t)];
+      await fetchOnlineLyrics(t);
+      var after = cache[trackKey(t)];
+      if (after && after.txt && !(before && before.txt)) lyrDl.found++;
+      lyrDl.done++;
+      if (lyrDl.done % 5 === 0 || lyrDl.done === lyrDl.total) renderLyrDl();
+      // go easy on the free service, and on the phone
+      await sleepMs(document.hidden ? 2500 : IS_PHONE ? 1200 : 700);
+    }
+    var finished = !lyrDl.stop && lyrDl.done === lyrDl.total;
+    lyrDl.running = false;
+    await flushLyricsCache();
+    renderLyrDl();
+    if (!quiet || lyrDl.found) toast((finished ? 'Done — ' : 'Stopped — ') + plural(lyrDl.found, 'song') + ' got lyrics saved for offline.', 3000);
+    // the song playing now may have just got lyrics
+    if (state.current && (!state.lyrics || !state.lyrics.synced)) noLocalLyrics(state.current);
+  }
+  function renderLyrDl() {
+    var el = $('lyrDlRow');
+    if (!el) return;
+    el.querySelector('.set-desc').textContent = lyrDl.running
+      ? 'Downloading… ' + lyrDl.done + ' / ' + lyrDl.total + ' songs checked, ' + plural(lyrDl.found, 'new lyric') + ' saved.'
+      : plural(lyricsSavedCount(), 'song') + ' have lyrics saved on this device. They and the highlighting work offline.';
+    el.querySelector('.set-ctl').innerHTML = lyrDl.running ? sBtn('Stop', 'data-cmd="lyrics-dl-stop"') : sBtn('Download for my library', 'data-cmd="lyrics-dl"', true);
+  }
+  // while online, quietly fetch lyrics for the next few songs too, so they're ready offline
+  function prefetchQueueLyrics() {
+    if (!lyricsOnlineAuto() || navigator.onLine === false || lyrDl.running) return;
+    lyricsCacheGet().then(function (cache) {
+      var next = state.queue.slice(state.qIndex + 1, state.qIndex + 4).map(function (id) { return state.byId.get(id); })
+        .filter(function (t) { return needsLyricsLookup(t, cache); });
+      (function step(i) {
+        if (i >= next.length) return;
+        fetchOnlineLyrics(next[i]).then(function () { setTimeout(function () { step(i + 1); }, 1500); });
+      })(0);
+    });
+  }
+  // with online lyrics on, the whole library is filled in slowly in the background (not on mobile data)
+  function autoLyricsDownload() {
+    if (lyricsOnlineAuto() && !onMeteredData() && state.tracks.length) downloadAllLyrics(true);
+  }
+  window.addEventListener('online', function () { setTimeout(autoLyricsDownload, 5000); });
   async function fetchOnlineLyrics(t) {
     var cache = await lyricsCacheGet(), key = trackKey(t);
     var hit = cache[key];
@@ -5126,7 +5215,7 @@
     if (!b || !state.current) return;
     var act = b.getAttribute('data-lyr');
     if (act === 'online') onlineLyricsFor(state.current, true);
-    else if (act === 'always') { settings.lyricsOnline = true; saveSettings(); $('npvAsk').hidden = true; onlineLyricsFor(state.current, true); }
+    else if (act === 'always') { settings.lyricsOnline = true; saveSettings(); $('npvAsk').hidden = true; onlineLyricsFor(state.current, true); setTimeout(autoLyricsDownload, 8000); }
   });
 
   /* ---------------- car mode ---------------- */
@@ -6040,6 +6129,8 @@
     output: function () { openOutput(); },
     car: function () { openCar(); },
     tidy: function () { openTidy(); },
+    'lyrics-dl': function () { downloadAllLyrics(false); },
+    'lyrics-dl-stop': function () { lyrDl.stop = true; },
     'tidy-undo': function () { undoTidy(); renderSettings(); },
     eq: function () { toggleEqPanel(); },
     dj: function () { toggleDj(); },

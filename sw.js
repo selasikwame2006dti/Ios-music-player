@@ -1,12 +1,12 @@
 /* Tunebox offline support: keeps a copy of the app so it opens with no internet.
    Your music is never cached here — it is always read straight from your own files. */
-var CACHE = 'tunebox-v20';
+var CACHE = 'tunebox-v21';
 var ASSETS = [
   './',
   'index.html',
-  'css/style.css?v=20',
-  'js/app.js?v=20',
-  'js/metadata.js?v=20',
+  'css/style.css?v=21',
+  'js/app.js?v=21',
+  'js/metadata.js?v=21',
   'js/vendor/qrcode.js', 'js/vendor/jsqr.js', 'js/vendor/peerjs.js',
   'icon.svg',
   'icons/icon-192.png',

@@ -99,6 +99,9 @@ Choose in **Settings → Appearance → Progress bar**:
   - The Now Playing panel lyrics highlight words too, and **⤢ Full screen** opens the big view.
   - Word timing is exact with word-timed `.lrc` files. Otherwise Tunebox estimates it from each line.
 - **Lyrics from the internet:** when a song has no lyrics, tap **Find lyrics online**, or turn on **Settings → Find missing lyrics online**. Lyrics come from the free LRCLIB service, which sees only the song's title, artist, album and length. Results are saved, so they still work offline afterwards.
+- **Lyrics offline:** lyrics found online are saved on your device, and the line-by-line and word-by-word highlighting runs on the device. So once a song's lyrics are saved, they work with no internet.
+  - **Settings → Lyrics for offline → Download for my library** saves lyrics for all your songs at once.
+  - With **Find missing lyrics online** turned on, Tunebox also fills them in slowly in the background (not on mobile data) and grabs the next few songs in your queue while you're online.
 - **Gapless playback:** with crossfade off, the next song starts the instant the current one ends. Great for live albums and DJ mixes.
 - **Play on…:** pick which speaker or headphones Tunebox uses (Chrome or Edge on a computer), and get help casting to a TV, Chromecast or AirPlay speaker.
 - **Car mode** (press **C**, the **Car** button in full screen, or **Browse**): huge buttons, swipe to skip, the current lyric line, a clock, and the screen stays on.
