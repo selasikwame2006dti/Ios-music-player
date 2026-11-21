@@ -288,10 +288,10 @@
     if (relinked.length) refreshFolderStates();
     invalidate();
     renderAll();
-    if (skippedDrm) toast(plural(skippedDrm, 'copy-protected iTunes file') + ' (.m4p) skipped — browsers can’t play those.', 5000);
-    if (!added.length && !skippedDrm && !opts.quiet && !relinked.length) toast(opts.rescan ? 'No new songs.' : 'No playable music found there.');
+    if (skippedDrm && !opts.silent) toast(plural(skippedDrm, 'copy-protected iTunes file') + ' (.m4p) skipped — browsers can’t play those.', 5000);
+    if (!added.length && !skippedDrm && !opts.quiet && !opts.silent && !relinked.length) toast(opts.rescan ? 'No new songs.' : 'No playable music found there.');
     if (added.length) {
-      toast((opts.rescan || opts.quiet ? 'Found ' + plural(added.length, 'new song') : 'Added ' + plural(added.length, 'song')) + '.');
+      if (!opts.silent) toast((opts.rescan || opts.quiet ? 'Found ' + plural(added.length, 'new song') : 'Added ' + plural(added.length, 'song')) + '.');
       loadMetaCache().then(function () {
         var need = applyCache(added);
         invalidate();
@@ -302,7 +302,7 @@
         djFill();
       });
     }
-    return { added: added, relinked: relinked };
+    return { added: added, relinked: relinked, drm: skippedDrm };
   }
 
   function clearLibrary() {
@@ -2407,8 +2407,27 @@
     opts = opts || {};
     if (!opts.quiet) setStatus('Looking for music…');
     var complete = true;
+    // songs appear in batches while the folder is still being read: the first ones almost at once
+    var pending = [], shown = 0, lastFlush = performance.now(), addedTotal = 0, drm = 0, relinkedTotal = 0;
+    var flush = function () {
+      if (!pending.length) return;
+      var batch = pending;
+      pending = [];
+      var res = ingest(batch, handle.name, { silent: true });
+      addedTotal += res.added.length;
+      relinkedTotal += res.relinked.length;
+      drm += res.drm;
+      shown += batch.length;
+      lastFlush = performance.now();
+      if (!opts.quiet) setStatus('Loading music… ' + plural(state.tracks.length, 'song'));
+    };
+    var onFile = function (en) {
+      out.push(en);
+      pending.push(en);
+      if (pending.length >= (shown ? 400 : 40) || performance.now() - lastFlush > 350) flush();
+    };
     try {
-      await walkHandle(handle, handle.name, out);
+      await walkHandle(handle, handle.name, out, onFile);
     } catch (e) {
       complete = false;
       if (!out.length) {
@@ -2421,18 +2440,27 @@
       }
       toast('Couldn’t read all of “' + handle.name + '”: ' + (e && e.message ? e.message : e));
     }
+    flush();
     setStatus('');
     var wasAway = folderStatus.get(handle.name);
     folderStatus.set(handle.name, { handle: handle, status: 'ok' });
     if (complete) folderIndexGet().then(function (idx) { idx[handle.name] = []; saveFolderIndex(handle.name, out); });
-    ingest(out, handle.name, { quiet: opts.quiet, rescan: opts.rescan, root: complete ? handle.name : null, seen: new Set() });
+    // a last pass over everything: removes songs that were deleted from the folder, and sums up
+    ingest(out, handle.name, { silent: true, root: complete ? handle.name : null, seen: new Set() });
+    if (!opts.quiet || addedTotal) {
+      if (drm) toast(plural(drm, 'copy-protected iTunes file') + ' (.m4p) skipped — browsers can’t play those.', 5000);
+      else if (addedTotal) toast((opts.rescan || opts.quiet ? 'Found ' + plural(addedTotal, 'new song') : 'Added ' + plural(addedTotal, 'song')) + '.');
+      else if (!opts.quiet && !relinkedTotal) toast(opts.rescan ? 'No new songs.' : 'No playable music found there.');
+    }
     if (wasAway && wasAway.status !== 'ok') toast('“' + handle.name + '” is connected again ✓', 2200);
     renderFolderList();
     return true;
   }
 
-  async function walkHandle(dir, prefix, out) {
-    var subdirs = [];
+  // Reads a folder tree. Files in each folder are opened many at a time (one by one was the slow part),
+  // and every song found is handed to onFile straight away.
+  async function walkHandle(dir, prefix, out, onFile) {
+    var subdirs = [], files = [];
     for await (var entry of dir.values()) {
       if (entry.name.charAt(0) === '.') continue;
       var path = prefix + '/' + entry.name;
@@ -2441,11 +2469,20 @@
       } else {
         var ext = extOf(entry.name);
         if (AUDIO_EXT.indexOf(ext) < 0 && IMG_EXT.indexOf(ext) < 0 && ext !== 'm4p' && ext !== 'lrc') continue;
-        try { out.push({ file: await entry.getFile(), path: path }); } catch (e) { /* unreadable */ }
-        if (out.length % 200 === 0) setStatus('Looking for music… ' + out.length + ' files');
+        files.push([entry, path]);
       }
     }
-    for (var i = 0; i < subdirs.length; i++) await walkHandle(subdirs[i][0], subdirs[i][1], out);
+    var LANES = IS_PHONE ? 8 : 24;
+    for (var i = 0; i < files.length; i += LANES) {
+      var got = await Promise.all(files.slice(i, i + LANES).map(function (f) {
+        return f[0].getFile().then(function (file) { return { file: file, path: f[1] }; }, function () { return null; });
+      }));
+      got.forEach(function (en) { if (!en) return; if (onFile) onFile(en); else out.push(en); });
+    }
+    // sub-folders a few at a time too
+    for (var j = 0; j < subdirs.length; j += 4) {
+      await Promise.all(subdirs.slice(j, j + 4).map(function (d) { return walkHandle(d[0], d[1], out, onFile); }));
+    }
   }
 
   function filesFromInput(input) {
@@ -2475,19 +2512,37 @@
       return;
     }
     setStatus('Looking for music…');
-    var out = [];
-    for (var k = 0; k < roots.length; k++) await walkEntry(roots[k], '', out);
-    setStatus('');
+    var out = [], pending = [], shown = 0, lastFlush = performance.now(), added = 0;
     var dirs = roots.filter(function (r) { return r.isDirectory; });
-    ingest(out, dirs.length ? dirs.map(function (d) { return d.name; }).join(', ') : '');
+    var rootName = dirs.length ? dirs.map(function (d) { return d.name; }).join(', ') : '';
+    var flush = function () {
+      if (!pending.length) return;
+      var batch = pending;
+      pending = [];
+      added += ingest(batch, rootName, { silent: true }).added.length;
+      shown += batch.length;
+      lastFlush = performance.now();
+      setStatus('Loading music… ' + plural(state.tracks.length, 'song'));
+    };
+    var onFile = function (en) {
+      out.push(en);
+      pending.push(en);
+      if (pending.length >= (shown ? 400 : 40) || performance.now() - lastFlush > 350) flush();
+    };
+    await Promise.all(roots.map(function (r) { return walkEntry(r, '', out, onFile); }));
+    flush();
+    setStatus('');
+    toast(added ? 'Added ' + plural(added, 'song') + '.' : 'No playable music found there.');
     if (!hasFSA || IS_PHONE) storeFiles(out);
   }
 
-  function walkEntry(entry, prefix, out) {
+  function walkEntry(entry, prefix, out, onFile) {
     var path = prefix ? prefix + '/' + entry.name : entry.name;
     if (entry.isFile) {
+      var ext = extOf(entry.name);
+      if (AUDIO_EXT.indexOf(ext) < 0 && IMG_EXT.indexOf(ext) < 0 && ext !== 'm4p' && ext !== 'lrc') return Promise.resolve();
       return new Promise(function (res) {
-        entry.file(function (f) { out.push({ file: f, path: path }); res(); }, function () { res(); });
+        entry.file(function (f) { var en = { file: f, path: path }; if (onFile) onFile(en); else out.push(en); res(); }, function () { res(); });
       });
     }
     if (!entry.isDirectory) return Promise.resolve();
@@ -2496,8 +2551,11 @@
       (function readBatch() {
         reader.readEntries(function (batch) {
           if (batch.length) { all = all.concat(batch); readBatch(); return; }
-          all.reduce(function (p, child) {
-            return p.then(function () { return walkEntry(child, path, out); });
+          // many at a time instead of one by one
+          var chunks = [];
+          for (var c = 0; c < all.length; c += 16) chunks.push(all.slice(c, c + 16));
+          chunks.reduce(function (p, chunk) {
+            return p.then(function () { return Promise.all(chunk.map(function (child) { return walkEntry(child, path, out, onFile); })); });
           }, Promise.resolve()).then(res);
         }, function () { res(); });
       })();
@@ -3937,17 +3995,19 @@
     storing = false;
     if (!full) setStatus(plural(state.tracks.length, 'song'));
   }
-  function loadStoredFiles() {
+  function loadStoredFiles(onBatch) {
     return fdbOpen().then(function (db) {
       return new Promise(function (res) {
-        var out = [];
+        var out = [], batch = [];
         var req = db.transaction('files').objectStore('files').openCursor();
         req.onsuccess = function () {
           var c = req.result;
-          if (!c) { res(out); return; }
+          if (!c) { if (onBatch && batch.length) onBatch(batch); res(out); return; }
           var v = c.value, f;
           try { f = new File([v.blob], v.name, { type: v.type, lastModified: v.lm }); } catch (e) { f = v.blob; f.name = v.name; }
-          out.push({ file: f, path: c.key, real: v.v === 2 });
+          var en = { file: f, path: c.key, real: v.v === 2 };
+          out.push(en);
+          if (onBatch) { batch.push(en); if (batch.length >= (out.length <= 60 ? 40 : 300)) { onBatch(batch); batch = []; } }
           c.continue();
         };
         req.onerror = function () { res(out); };
@@ -6448,10 +6508,12 @@
     invalidate();
     renderAll(true);
   });
-  loadStoredFiles().catch(function () { return []; }).then(function (entries) {
+  loadStoredFiles(function (batch) {
+    // saved songs appear in batches while they're being read
+    ingest(batch, 'Saved on this device', { silent: true });
+    batch.forEach(function (e) { var t = state.byPath.get(e.path); if (t) t.stored = true; });
+  }).catch(function () { return []; }).then(function (entries) {
     if (entries.length) {
-      ingest(entries, 'Saved on this device');
-      entries.forEach(function (e) { var t = state.byPath.get(e.path); if (t) t.stored = true; });
       setTimeout(function () { verifyStoredCopies(entries); }, 4000);
     }
     restorePickedFolders();
