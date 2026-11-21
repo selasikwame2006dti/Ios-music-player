@@ -2005,3 +2005,29 @@ body.radio-on .seek-wrap { display: none; }
 .keys div { display: flex; align-items: center; font-size: 13px; color: var(--text-2); }
 .keys kbd { min-width: 34px; text-align: center; margin-right: 10px; padding: 3px 7px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--glass-2); color: var(--text); font: 600 12px/1.2 inherit; }
 @media (max-width: 720px) { .keys { grid-template-columns: 1fr; } }
+/* hands-on tour */
+.tour-block { position: fixed; }
+#tour.centered .tour-block { background: rgba(5, 6, 10, 0.62); }
+.tour-hand { display: none; position: absolute; right: -6px; bottom: -22px; font-size: 26px; filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.5));
+  -webkit-animation: tourTap 1.2s ease-in-out infinite; animation: tourTap 1.2s ease-in-out infinite; }
+#tour.trying .tour-hand { display: block; }
+@-webkit-keyframes tourTap { 0%, 100% { -webkit-transform: translate(0, 0); } 50% { -webkit-transform: translate(-6px, -8px); } }
+@keyframes tourTap { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(-6px, -8px); } }
+#tour.trying .tour-spot { box-shadow: 0 0 0 9999px rgba(5, 6, 10, 0.55), 0 0 0 3px rgb(var(--tint)), 0 0 30px 8px rgba(var(--tint), 0.7); }
+.tour-ctl { margin-top: 12px; }
+.tour-ctl .tour-seg { display: flex; width: 100%; }
+.tour-ctl .tour-seg button { flex: 1; }
+.tour-ctl .tour-sw { justify-content: flex-start; }
+.tour-ctl .tour-sw button { width: 30px; height: 30px; margin: 3px 8px 3px 0; }
+.tour-later { font-size: 11.5px; color: var(--text-3); margin-top: 8px; }
+.tour-card.enter { -webkit-animation: tourIn 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); animation: tourIn 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@-webkit-keyframes tourIn { from { opacity: 0; -webkit-transform: translateY(8px) scale(0.98); } }
+@keyframes tourIn { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+.tour-card.nudge { -webkit-animation: tourNudge 0.4s ease; animation: tourNudge 0.4s ease; }
+@-webkit-keyframes tourNudge { 20%, 60% { -webkit-transform: translateX(-6px); } 40%, 80% { -webkit-transform: translateX(6px); } }
+@keyframes tourNudge { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+#tour { pointer-events: none; }
+#tour .tour-block, #tour .tour-card { pointer-events: auto; }
+.tour-step { display: flex; align-items: center; }
+.tour-prog { flex: 1; height: 3px; border-radius: 2px; background: var(--border); margin-left: 10px; overflow: hidden; }
+.tour-prog i { display: block; height: 100%; background: rgb(var(--tint)); border-radius: 2px; -webkit-transition: width 0.3s; transition: width 0.3s; }
