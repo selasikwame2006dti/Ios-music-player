@@ -6192,6 +6192,7 @@
   var TAP = IS_PHONE || (window.matchMedia && matchMedia('(pointer: coarse)').matches) ? 'Tap' : 'Click';
   function hasSongs() { return state.tracks.some(function (t) { return !t.offline; }); }
   function playingNow() { return !!state.current && !audio.paused; }
+  function browseOpen() { return !!document.querySelector('#modal .browse-list') && !$('modalBack').hidden; }
 
   // little controls shown inside the tour card; they change the setting straight away
   function tSeg(key, opts, cur) {
@@ -6220,7 +6221,7 @@
   var TOURS = {
     app: [
       { title: 'Welcome to Tunebox 👋', text: function () { return 'Tunebox plays the music saved on your ' + (IS_PHONE ? 'phone' : 'computer') + ' — no account, no uploads, and it works offline. Let’s look around: on some steps you’ll try things yourself.'; } },
-      { el: ['#btnEmptyOpen', '.sidebar [data-cmd="open-folder"]', '.tabbar [data-cmd="browse"]'], when: function () { return !hasSongs(); }, try: true, wait: hasSongs, next: 'Skip for now',
+      { el: ['#btnEmptyOpen', '.sidebar [data-cmd="open-folder"]'], when: function () { return !hasSongs(); }, try: true, wait: hasSongs, next: 'Skip for now',
         title: 'Add your music', text: TAP + ' the highlighted button and pick the folder where your songs are' + (IS_IOS ? ' (or pick songs in the Files app)' : '') + '. Nothing is uploaded. I’ll wait — the tour carries on when your songs appear.' },
       { el: ['#search', '#search2'], title: 'Search', text: 'Type a song, artist or album to find it straight away.' },
       { el: ['.sidebar nav', '.tabbar'], title: IS_PHONE ? 'Get around' : 'Your library', text: IS_PHONE ? 'Songs, Browse (albums, artists, playlists, EQ, Connect devices and more), the DJ, your liked songs and Radio.' : 'Songs, albums, artists, favourites, playlists and your listening stats.' },
@@ -6242,9 +6243,20 @@
         title: 'Try it: close it', text: TAP + ' here to close the big player (or press Esc). The music keeps playing.', after: function () { if (state.stage) showStage(false); } },
       { el: ['.sidebar .dj-nav', '.tabbar .tab-dj'], title: 'Tunebox DJ ✦', text: 'An endless mix chosen from your own library. It learns from what you play and skip — no internet needed. When songs change, how long should they blend?',
         controls: function () { var x = typeof settings.crossfade === 'number' ? settings.crossfade : 0; return tSeg('crossfade', [[0, 'No fade'], [4, '4 s'], [8, '8 s'], [12, '12 s']], x); } },
-      { el: ['.sidebar [data-cmd="eq"]', '#inspector [data-cmd="eq"]', '.tabbar [data-cmd="browse"]'], title: 'Equalizer & vibes', text: '10-band equalizer, bass boost, and vibes like Slowed + Reverb or Nightcore' + (IS_PHONE ? ' — it’s in Browse.' : '.') },
+      { el: ['.sidebar [data-cmd="eq"]', '#inspector [data-cmd="eq"]'], title: 'Equalizer & vibes', text: '10-band equalizer, bass boost, and vibes like Slowed + Reverb or Nightcore.' },
       { el: ['.sidebar [data-view="radio"]', '.tabbar [data-view="radio"]'], title: 'Radio', text: 'Free live stations from around the world. ♥ a song you hear and it’s saved to “Heard on radio” so you can find it later.' },
-      { el: ['.sidebar [data-view="connect"]', '.tabbar [data-cmd="browse"]'], title: 'Connect your devices', text: IS_PHONE ? 'In Browse you’ll also find Connect devices: use your phone as a remote for your PC, send songs, or let friends add songs at a party.' : 'Use your phone as a remote, send songs between devices, or let friends add songs at a party — even over a phone hotspot.' },
+      { el: ['.sidebar [data-view="connect"]'], title: 'Connect your devices', text: 'Use your phone as a remote, send songs between devices, or let friends add songs at a party — even over a phone hotspot.' },
+      // phones: everything that doesn't fit in the tabs lives in Browse — open it and look inside
+      { el: ['.tabbar [data-cmd="browse"]'], when: function () { return IS_PHONE; }, try: true, wait: browseOpen, next: 'Skip',
+        title: 'Try it: open Browse', text: 'Browse holds everything that doesn’t fit in the tabs at the bottom. Tap it.' },
+      { el: ['#modal .browse-list [data-view="playlists"]'], when: browseOpen, title: 'Your library', text: 'Albums, artists, playlists, favourites, Up Next and your listening stats are at the top of Browse.' },
+      { el: ['#modal .browse-list [data-cmd="eq"]'], when: browseOpen, title: 'Equalizer & vibes', text: '10-band equalizer, bass boost, and vibes like Slowed + Reverb or Nightcore.' },
+      { el: ['#modal .browse-list [data-cmd="sleep"]'], when: browseOpen, title: 'Sleep timer', text: 'Music fades out and stops after the time you choose — or at the end of the song.' },
+      { el: ['#modal .browse-list [data-cmd="rescan"]', '#modal .browse-list [data-cmd="open-folder"]'], when: browseOpen, title: 'Add & update your music', text: 'Add another music folder, or check for new songs after you copy some to your phone.' },
+      { el: ['#modal .browse-list [data-cmd="car"]'], when: browseOpen, title: 'Car mode', text: 'Huge buttons for driving: swipe to skip, tap the cover to pause.' },
+      { el: ['#modal .browse-list [data-cmd="output"]'], when: browseOpen, title: 'Play on… / Cast', text: 'How to play on a speaker or TV.' },
+      { el: ['#modal .browse-list [data-view="connect"]'], when: browseOpen, title: 'Connect devices', text: 'Use your phone as a remote for your PC, send songs between devices, or let friends add songs at a party.' },
+      { el: ['#modal .browse-list [data-cmd="tour"]'], when: browseOpen, title: 'Help & tour', text: 'Come back here any time to take this tour again.', after: function () { if (browseOpen()) closeModal(); } },
       { title: 'Make it yours 🎨', text: 'Light or dark?', controls: function () { return tSeg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], settings.theme || 'auto'); } },
       { title: 'Pick a colour', text: 'The rainbow one takes its colours from each song’s album art.', controls: tSwatches },
       { el: ['.sidebar [data-view="settings"]', '.top-settings'], title: 'Everything else is in Settings', text: 'All of this — and much more — can be changed any time in Settings. You can take this tour again from Settings → Help.' },
@@ -6328,6 +6340,7 @@
   function endTour(done) {
     if (!tour) return;
     clearInterval(tourTimer);
+    if (browseOpen()) closeModal();
     settings.tourSeen = true;
     saveSettings();
     if (done && tour.name === 'app') toast('Take the tour again any time: Settings → Help', 2600);
@@ -6760,6 +6773,7 @@
   /* ------------------------------ start ------------------------------ */
 
   if (IS_IOS || (IS_ANDROID && !window.showDirectoryPicker)) {
+    $('emptyLead').innerHTML = 'Point Tunebox at the folder where your songs live. It plays them straight from your phone &mdash; nothing is uploaded, and it works without internet.';
     if (IS_IOS) {
       $('btnEmptyOpen').textContent = 'Choose songs';
       $('btnEmptyOpen').nextElementSibling.hidden = true;
