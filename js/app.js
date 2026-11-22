@@ -1065,6 +1065,7 @@
 
   function applyVolumeToDecks() {
     var f = typeof sleepFactor === 'number' ? sleepFactor : 1;
+    if (typeof applySoundProfile === 'function' && enh) applyLoudnessSoon();
     if (masterGain) {
       decks.forEach(function (d) { d.volume = 1; d.muted = false; });
       masterGain.gain.setTargetAtTime(muted ? 0 : vol * f, ac.currentTime, 0.05);
@@ -1794,7 +1795,7 @@
       convNode = ac.createConvolver();
       convNode.buffer = makeImpulse(2.8, 2.4);
       // sound profile: richer bass, mids and highs (after the EQ, before the reverb and limiter)
-      node = buildEnhancer(node);
+      node = buildEnhancer(ac, node);
       eqOut = node;
       node.connect(dryNode);
       convNode.connect(wetNode);
@@ -1868,111 +1869,141 @@
   }, 1000);
 
   /* ---------------- sound profiles ----------------
-     Make small speakers sound big, the way some apps do by default:
-     - virtual bass: laptop speakers can't play deep bass, so we add the bass notes'
-       overtones (which they can play) and the ear fills in the missing low notes
-     - a fuller low end, a clearer presence range and a little "air" on top
-     - a light exciter for sparkle, stereo widening (laptop speakers sit close together)
-     - parallel compression: quiet detail comes up, the sound gets denser
-     The limiter after it keeps everything from crackling. */
+     Built on how good small-speaker audio is done:
+     1. Loudness at low volume (equal-loudness / ISO 226): as you turn the volume down your ears
+        lose the bass first, so bass (and a little treble) is added back gradually — none at full
+        volume, capped so it never gets boomy.
+     2. Bass protection at high volume: a limiter on the bass band only (what laptop/phone
+        "smart amps" do), so loud bass doesn't distort small speakers — the rest stays untouched.
+     3. Virtual bass done gently: only the bass band is used, the overtones it makes follow the
+        bass's own loudness (|x| rectifier — no hard clipping, so every bass note keeps its
+        level), and they're filtered to a clean band.
+     4. Do no harm: profiles are light; "Off" bypasses everything. */
   var SOUND_PROFILES = {
-    rich:       { name: 'Rich',            desc: 'Fuller bass, warm mids and clear highs — great on most speakers.', hp: 20, low: [100, 3.5], mid: [1400, 0.8], pres: [3200, 1.5], air: [11000, 2.5], vbass: 0.05, excite: 0.10, width: 1.2, comp: 0.30, gain: 1.5 },
-    laptop:     { name: 'Laptop speakers', desc: 'For small built-in speakers: deep-sounding bass they can’t normally play, clearer voices, wider sound.', hp: 95, low: [180, 3], mid: [900, 1.5], pres: [2800, 2.5], air: [10000, 3], vbass: 0.11, excite: 0.14, width: 1.4, comp: 0.45, gain: 2.5 },
-    headphones: { name: 'Headphones',      desc: 'Tight, punchy bass and detail, without widening.', hp: 15, low: [80, 3.5], mid: [1200, 0.5], pres: [3500, 1], air: [12000, 2], vbass: 0.015, excite: 0.06, width: 1.0, comp: 0.2, gain: 1 },
-    bass:       { name: 'Bass boost',      desc: 'Heavy, full low end.', hp: 20, low: [90, 7], mid: [1200, 0], pres: [3200, 1], air: [11000, 1.5], vbass: 0.07, excite: 0.06, width: 1.15, comp: 0.35, gain: 0.5 },
-    vocal:      { name: 'Vocal',           desc: 'Clear voices and lyrics — good for podcasts and soft songs.', hp: 60, low: [120, 0], mid: [1500, 2], pres: [3000, 3.5], air: [10000, 2], vbass: 0.02, excite: 0.1, width: 1.1, comp: 0.35, gain: 1.5 },
-    off:        { name: 'Off',             desc: 'No extra processing — the song exactly as it was mixed.', hp: 10, low: [100, 0], mid: [1200, 0], pres: [3200, 0], air: [11000, 0], vbass: 0, excite: 0, width: 1, comp: 0, gain: 0 }
+    rich:       { name: 'Rich',            desc: 'Fuller bass and warmth, clear highs — great on earbuds, headphones and speakers.', hp: 15, low: [90, 3], mid: [250, 1], pres: [3200, 0.8], air: [11000, 1.5], vb: 0.3, vb2: 0.4, vbBand: [100, 450], ex: 0.04, width: 1.12, comp: 0.25, gain: 0, lowThr: -14, small: false },
+    laptop:     { name: 'Laptop speakers', desc: 'Light touch for built-in speakers: deeper-sounding bass, kept clean when loud, and fuller sound when quiet.', hp: 15, low: [140, 1.5], mid: [260, 1], pres: [3000, 0], air: [10000, 1], vb: 0.6, vb2: 0.9, vbBand: [100, 600], ex: 0.03, width: 1.1, comp: 0.18, gain: 0, lowThr: -18, small: true },
+    phone:      { name: 'Phone speaker',   desc: 'For the phone’s own speaker: bass you can actually hear on it, clear voices, no distortion when loud.', hp: 60, low: [200, 1.5], mid: [400, 1.5], pres: [2500, 0.5], air: [9000, 1], vb: 0.9, vb2: 1.0, vbBand: [200, 900], ex: 0.03, width: 1.0, comp: 0.3, gain: 0, lowThr: -16, small: true },
+    headphones: { name: 'Headphones',      desc: 'Tight, punchy bass and detail, without widening.', hp: 10, low: [80, 2.5], mid: [250, 0.5], pres: [3500, 0.5], air: [12000, 1.5], vb: 0.05, vb2: 0, vbBand: [100, 400], ex: 0.03, width: 1.0, comp: 0.15, gain: 0, lowThr: -6, small: false },
+    bass:       { name: 'Bass boost',      desc: 'Heavy, full low end.', hp: 15, low: [90, 6], mid: [250, 1], pres: [3000, 0.5], air: [11000, 1], vb: 0.5, vb2: 0.5, vbBand: [100, 450], ex: 0.03, width: 1.1, comp: 0.3, gain: 0, lowThr: -8, small: false },
+    vocal:      { name: 'Vocal',           desc: 'Clear voices and lyrics — good for podcasts and soft songs.', hp: 70, low: [120, -1], mid: [1500, 2], pres: [3000, 2.5], air: [10000, 1.5], vb: 0.1, vb2: 0, vbBand: [120, 500], ex: 0.05, width: 1.05, comp: 0.3, gain: 0, lowThr: -12, small: false },
+    off:        { name: 'Off',             desc: 'No extra processing — the song exactly as it was mixed.', off: true, hp: 10, low: [100, 0], mid: [1200, 0], pres: [3200, 0], air: [11000, 0], vb: 0, vbBand: [100, 450], ex: 0, width: 1, comp: 0, gain: 0, lowThr: 0, small: false }
   };
   var enh = null;
-  function shaperCurve(drive, even) {
-    var n = 2048, c = new Float32Array(n);
-    for (var i = 0; i < n; i++) {
-      var x = i * 2 / n - 1;
-      c[i] = Math.tanh(drive * x) / Math.tanh(drive) + even * x * x; // odd + a little even harmonics
-    }
-    return c;
-  }
-  function buildEnhancer(input) {
-    var c = ac;
+  function rectifierCurve() { var n = 4096, c = new Float32Array(n); for (var i = 0; i < n; i++) c[i] = Math.abs(i * 2 / n - 1); return c; }
+  function softCurve(drive) { var n = 2048, c = new Float32Array(n); for (var i = 0; i < n; i++) { var x = i * 2 / n - 1; c[i] = Math.tanh(drive * x) / Math.tanh(drive); } return c; }
+  function buildEnhancer(c, input) {
     var bq = function (type, f, q) { var b = c.createBiquadFilter(); b.type = type; b.frequency.value = f; if (q) b.Q.value = q; return b; };
     var g = function (v) { var x = c.createGain(); x.gain.value = v; return x; };
-    var e = enh = {};
-    e.hp = bq('highpass', 20, 0.7);
-    e.low = bq('lowshelf', 100);
-    e.mid = bq('peaking', 1200, 0.9);
-    e.pres = bq('peaking', 3200, 1.0);
-    e.air = bq('highshelf', 11000);
+    var e = {};
+    // (2) bass protection: split at 150 Hz (Linkwitz-Riley, sums flat), limit only the lows
+    e.xLo1 = bq('lowpass', 150, 0.7071); e.xLo2 = bq('lowpass', 150, 0.7071);
+    e.xHi1 = bq('highpass', 150, 0.7071); e.xHi2 = bq('highpass', 150, 0.7071);
+    e.lowLim = c.createDynamicsCompressor();
+    e.lowLim.knee.value = 6; e.lowLim.ratio.value = 10; e.lowLim.attack.value = 0.005; e.lowLim.release.value = 0.18; e.lowLim.threshold.value = 0;
+    e.split = g(1);
+    input.connect(e.xLo1); e.xLo1.connect(e.xLo2); e.xLo2.connect(e.lowLim); e.lowLim.connect(e.split);
+    input.connect(e.xHi1); e.xHi1.connect(e.xHi2); e.xHi2.connect(e.split);
+    // tone: profile shape + (1) loudness at low volume
+    e.hp = bq('highpass', 15, 0.7);
+    e.low = bq('lowshelf', 100); e.mid = bq('peaking', 1200, 0.8); e.pres = bq('peaking', 3200, 1.0); e.air = bq('highshelf', 11000);
+    e.lcLow = bq('lowshelf', 110); e.lcHigh = bq('highshelf', 9000);
     e.sum = g(1);
-    input.connect(e.hp); e.hp.connect(e.low); e.low.connect(e.mid); e.mid.connect(e.pres); e.pres.connect(e.air); e.air.connect(e.sum);
-    // virtual bass: take the lows, make harmonics, keep the part small speakers can play
-    // (driven hard, so even quiet bass makes clear overtones — like the bass enhancers in phones and TVs)
-    e.vbIn = bq('lowpass', 140, 0.7);
-    e.vbDrive = g(14);
-    e.vbShape = c.createWaveShaper(); e.vbShape.curve = shaperCurve(3, 0.5); e.vbShape.oversample = '2x';
-    e.vbHp = bq('highpass', 110, 0.7);
-    e.vbBand = bq('lowpass', 520, 0.7);
+    e.split.connect(e.hp); e.hp.connect(e.low); e.low.connect(e.mid); e.mid.connect(e.pres); e.pres.connect(e.air); e.air.connect(e.lcLow); e.lcLow.connect(e.lcHigh); e.lcHigh.connect(e.sum);
+    // (3) virtual bass: band-limited lows -> rectifier (overtones follow the bass level) -> clean band
+    e.vbIn1 = bq('lowpass', 120, 0.7071); e.vbIn2 = bq('lowpass', 120, 0.7071);
+    e.vbShape = c.createWaveShaper(); e.vbShape.curve = rectifierCurve(); e.vbShape.oversample = '4x';
+    e.vbHp1 = bq('highpass', 100, 0.7071); e.vbHp2 = bq('highpass', 100, 0.7071);
+    e.vbLp = bq('lowpass', 450, 0.7071);
     e.vbGain = g(0);
-    input.connect(e.vbIn); e.vbIn.connect(e.vbDrive); e.vbDrive.connect(e.vbShape); e.vbShape.connect(e.vbHp); e.vbHp.connect(e.vbBand); e.vbBand.connect(e.vbGain); e.vbGain.connect(e.sum);
-    // exciter: a touch of harmonics on the highs for sparkle
-    e.exIn = bq('highpass', 3500, 0.7);
-    e.exShape = c.createWaveShaper(); e.exShape.curve = shaperCurve(2.5, 0); e.exShape.oversample = '2x';
+    e.split.connect(e.vbIn1); e.vbIn1.connect(e.vbIn2); e.vbIn2.connect(e.vbShape); e.vbShape.connect(e.vbHp1); e.vbHp1.connect(e.vbHp2); e.vbHp2.connect(e.vbLp); e.vbLp.connect(e.vbGain); e.vbGain.connect(e.sum);
+    // rectifying again gives overtones at 4x the note — that's what lets the deepest notes (30–60 Hz) be heard too
+    e.vb2Pre = bq('highpass', 50, 0.7071);
+    e.vb2Shape = c.createWaveShaper(); e.vb2Shape.curve = rectifierCurve(); e.vb2Shape.oversample = '4x';
+    e.vb2Hp = bq('highpass', 100, 0.7071); e.vb2Lp = bq('lowpass', 450, 0.7071);
+    e.vb2Gain = g(0);
+    e.vbShape.connect(e.vb2Pre); e.vb2Pre.connect(e.vb2Shape); e.vb2Shape.connect(e.vb2Hp); e.vb2Hp.connect(e.vb2Lp); e.vb2Lp.connect(e.vb2Gain); e.vb2Gain.connect(e.sum);
+    // a light exciter for air
+    e.exIn = bq('highpass', 4000, 0.7);
+    e.exShape = c.createWaveShaper(); e.exShape.curve = softCurve(2); e.exShape.oversample = '2x';
     e.exGain = g(0);
-    input.connect(e.exIn); e.exIn.connect(e.exShape); e.exShape.connect(e.exGain); e.exGain.connect(e.sum);
-    // stereo width (mid/side): L' = aL + bR, R' = aR + bL
-    e.split = c.createChannelSplitter(2); e.merge = c.createChannelMerger(2);
+    e.split.connect(e.exIn); e.exIn.connect(e.exShape); e.exShape.connect(e.exGain); e.exGain.connect(e.sum);
+    // stereo width (mid/side)
+    e.sp = c.createChannelSplitter(2); e.mg = c.createChannelMerger(2);
     e.ll = g(1); e.rr = g(1); e.lr = g(0); e.rl = g(0);
-    e.sum.connect(e.split);
-    e.split.connect(e.ll, 0); e.split.connect(e.rl, 0); e.split.connect(e.rr, 1); e.split.connect(e.lr, 1);
-    e.ll.connect(e.merge, 0, 0); e.lr.connect(e.merge, 0, 0); e.rr.connect(e.merge, 0, 1); e.rl.connect(e.merge, 0, 1);
-    // parallel compression: a squeezed copy mixed under the original
-    e.out = g(1);
-    e.dry = g(1);
+    e.sum.connect(e.sp);
+    e.sp.connect(e.ll, 0); e.sp.connect(e.rl, 0); e.sp.connect(e.rr, 1); e.sp.connect(e.lr, 1);
+    e.ll.connect(e.mg, 0, 0); e.lr.connect(e.mg, 0, 0); e.rr.connect(e.mg, 0, 1); e.rl.connect(e.mg, 0, 1);
+    // gentle parallel compression for density
+    e.out = g(1); e.dry = g(1);
     e.comp = c.createDynamicsCompressor();
-    e.comp.threshold.value = -32; e.comp.knee.value = 10; e.comp.ratio.value = 6; e.comp.attack.value = 0.008; e.comp.release.value = 0.25;
+    e.comp.threshold.value = -30; e.comp.knee.value = 12; e.comp.ratio.value = 3; e.comp.attack.value = 0.015; e.comp.release.value = 0.3;
     e.compGain = g(0);
-    e.merge.connect(e.dry); e.dry.connect(e.out);
-    e.merge.connect(e.comp); e.comp.connect(e.compGain); e.compGain.connect(e.out);
+    e.mg.connect(e.dry); e.dry.connect(e.out);
+    e.mg.connect(e.comp); e.comp.connect(e.compGain); e.compGain.connect(e.out);
     e.makeup = g(1);
     e.out.connect(e.makeup);
-    applySoundProfile(true);
+    e.ctx = c;
+    e.makeup.__enh = e;
+    if (c === ac) { enh = e; applySoundProfile(true); }
     return e.makeup;
   }
+  var outputLabel = '';
+  var applyLoudnessSoon = throttle(function () { applySoundProfile(); }, 120);
   // "Auto" picks a profile from what's playing the sound
   function autoProfile() {
-    if (IS_PHONE) return 'rich';
-    var lab = (settings.sinkId ? settings.sinkLabel : (outputLabel || '')) || '';
+    var lab = (settings.sinkId ? settings.sinkLabel : outputLabel) || '';
     var k = lab ? devKind(lab) : '';
     if (k === 'headphones') return 'headphones';
     if (k === 'speaker' || k === 'tv') return 'rich';
+    // Bluetooth adds a lot of delay: on a phone or Mac that means earbuds or a BT speaker, not the built-in one
+    var lat = ac && typeof ac.outputLatency === 'number' ? ac.outputLatency : 0;
+    if (lat > 0.1) return 'rich';
+    if (IS_PHONE) return 'phone';
     if (k === 'laptop' || /macbook/i.test(lab) || /Macintosh/.test(navigator.userAgent)) return 'laptop';
     return 'rich';
   }
-  var outputLabel = '';
-  function soundProfileName() { var p = settings.soundProfile || 'auto'; return p === 'auto' ? autoProfile() : p; }
-  function applySoundProfile(now) {
-    if (!enh || !ac) return;
-    var P = SOUND_PROFILES[soundProfileName()] || SOUND_PROFILES.rich, t = ac.currentTime, tc = now ? 0.001 : 0.12;
+  function soundProfileName() { var p = settings.soundProfile || 'auto'; return p === 'auto' ? autoProfile() : (SOUND_PROFILES[p] ? p : 'rich'); }
+  function loudnessOn() { return settings.loudnessComp !== false; }
+  function applySoundProfile(now, e) {
+    e = e || enh;
+    if (!e) return;
+    var c = e.ctx, P = SOUND_PROFILES[soundProfileName()] || SOUND_PROFILES.rich, t = c.currentTime, tc = now ? 0.001 : 0.12;
     var set = function (param, v) { param.setTargetAtTime(v, t, tc); };
-    set(enh.hp.frequency, P.hp);
-    set(enh.low.frequency, P.low[0]); set(enh.low.gain, P.low[1]);
-    set(enh.mid.frequency, P.mid[0]); set(enh.mid.gain, P.mid[1]);
-    set(enh.pres.frequency, P.pres[0]); set(enh.pres.gain, P.pres[1]);
-    set(enh.air.frequency, P.air[0]); set(enh.air.gain, P.air[1]);
-    set(enh.vbGain.gain, P.vbass);
-    set(enh.exGain.gain, P.excite);
+    // (1) loudness at low volume, from the volume you've set (0 dB = full volume)
+    var v = Math.max(0.01, muted ? 1 : vol), att = -20 * Math.log10(v), useLC = loudnessOn() && !P.off;
+    var lcBass = useLC ? Math.min(P.small ? 6 : 9, att * 0.33) : 0;
+    var lcTreb = useLC ? Math.min(3, att * 0.1) : 0;
+    // near full volume on small speakers, ease the bass off a little (they distort first)
+    var hot = P.small && v > 0.85 ? (v - 0.85) / 0.15 * 2 : 0;
+    set(e.hp.frequency, P.hp);
+    set(e.low.frequency, P.low[0]); set(e.low.gain, P.low[1] - hot);
+    set(e.mid.frequency, P.mid[0]); set(e.mid.gain, P.mid[1]);
+    set(e.pres.frequency, P.pres[0]); set(e.pres.gain, P.pres[1]);
+    set(e.air.frequency, P.air[0]); set(e.air.gain, P.air[1]);
+    set(e.lcLow.gain, P.small ? lcBass * 0.5 : lcBass); // small speakers get the rest as overtones
+    set(e.lcHigh.gain, lcTreb);
+    set(e.lowLim.threshold, P.off ? 0 : P.lowThr);
+    var vbBoost = P.small ? 1 + Math.min(0.8, att * 0.04) : 1;
+    set(e.vbGain.gain, P.vb * vbBoost);
+    set(e.vb2Gain.gain, P.vb * vbBoost * (P.vb2 || 0));
+    set(e.vbHp1.frequency, P.vbBand[0]); set(e.vbHp2.frequency, P.vbBand[0]); set(e.vbLp.frequency, P.vbBand[1]);
+    set(e.vb2Hp.frequency, P.vbBand[0]); set(e.vb2Lp.frequency, P.vbBand[1]);
+    set(e.exGain.gain, P.ex);
     var a = (1 + P.width) / 2, b = (1 - P.width) / 2;
-    set(enh.ll.gain, a); set(enh.rr.gain, a); set(enh.lr.gain, b); set(enh.rl.gain, b);
-    set(enh.compGain.gain, P.comp * 1.8);
-    set(enh.dry.gain, 1 - P.comp * 0.25);
-    set(enh.makeup.gain, Math.pow(10, P.gain / 20));
-    $$('.sp-chip').forEach(function (x) { x.classList.toggle('on', x.getAttribute('data-sp') === (settings.soundProfile || 'auto')); });
-    $$('.sp-desc').forEach(function (x) { x.textContent = soundProfileDesc(); });
+    set(e.ll.gain, a); set(e.rr.gain, a); set(e.lr.gain, b); set(e.rl.gain, b);
+    set(e.compGain.gain, P.comp * 0.5);
+    set(e.dry.gain, 1 - P.comp * 0.15);
+    set(e.makeup.gain, Math.pow(10, P.gain / 20));
+    if (e === enh) {
+      $$('.sp-chip').forEach(function (x) { x.classList.toggle('on', x.getAttribute('data-sp') === (settings.soundProfile || 'auto')); });
+      $$('.sp-desc').forEach(function (x) { x.textContent = soundProfileDesc(); });
+    }
   }
   function soundProfileDesc() {
     var n = soundProfileName(), P = SOUND_PROFILES[n];
-    if (!ac && IS_IOS) return 'Sound profiles aren’t available on iPhone and iPad — Safari doesn’t allow sound processing there.';
+    if (IS_IOS) return 'Sound profiles aren’t available on iPhone and iPad — Safari doesn’t allow sound processing there.';
     if (settings.webAudio === false) return 'Turn on Settings → App → Sound effects engine to use sound profiles.';
-    return ((settings.soundProfile || 'auto') === 'auto' ? 'Auto chose “' + P.name + '” for this device. ' : '') + P.desc;
+    return ((settings.soundProfile || 'auto') === 'auto' ? 'Auto chose “' + P.name + '” for what’s playing the sound. ' : '') + P.desc;
   }
   function soundProfileChips() {
     var cur = settings.soundProfile || 'auto';
@@ -1980,6 +2011,7 @@
       return '<button class="sp-chip' + (o[0] === cur ? ' on' : '') + '" data-sp="' + o[0] + '">' + o[1] + '</button>';
     }).join('') + '</div>';
   }
+  setInterval(function () { if (enh && (settings.soundProfile || 'auto') === 'auto' && !audio.paused) applySoundProfile(); }, 5000);
   function renderSoundProfileBox() { var b = $('spChips'); if (b) b.innerHTML = soundProfileChips(); $$('.sp-desc').forEach(function (x) { x.textContent = soundProfileDesc(); }); }
   function setSoundProfile(name) {
     settings.soundProfile = name;
@@ -2973,7 +3005,7 @@
     blue: [[59, 130, 246], [6, 182, 212]],
     green: [[16, 185, 129], [6, 182, 212]]
   };
-  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level', 'watchFolders', 'lyricWords', 'gapless'];
+  var DEFAULT_ON = ['viz', 'smoothSkip', 'softPause', 'preservePitch', 'djArtistGap', 'djFavs', 'autoOpen', 'webAudio', 'level', 'watchFolders', 'lyricWords', 'gapless', 'loudnessComp'];
   // these default depending on the device
   var DEVICE_DEFAULTS = { analyze: function () { return !IS_PHONE; }, keepFiles: function () { return IS_PHONE || !hasFSA; } };
   function isOn(key) {
@@ -3084,6 +3116,7 @@
 
       sCard('Sound', 'Make any speaker sound richer — even small laptop speakers.',
         sRow('Sound profile', '<span class="sp-desc">' + esc(soundProfileDesc()) + '</span>', soundProfileChips(), 'wide') +
+        sRow('Fuller sound at low volume', 'Your ears hear less bass when it’s quiet — this adds it back as you turn down (none at full volume).', sSwitch('loudnessComp')) +
         sRow('Equalizer', eqName + ' · 10 bands, ±15 dB', sBtn('Open equalizer', 'data-cmd="eq"', true))) +
 
       sCard('Tunebox DJ', 'Plays songs that go well together, forever. No internet or AI service — it learns from what you play and skip.',
@@ -3125,6 +3158,7 @@
     switch (key) {
       case 'lyricWords': renderLyrics(); break;
       case 'seekStyle': applySeekStyle(); break;
+      case 'loudnessComp': applySoundProfile(); break;
       case 'lyricsOnline': if (val && state.current && !state.lyrics) onlineLyricsFor(state.current); if (val) setTimeout(autoLyricsDownload, 3000); break;
       case 'gapless': resetGapless(); break;
       case 'theme':
@@ -6402,7 +6436,7 @@
       { el: ['#modal .browse-list [data-cmd="tour"]'], when: browseOpen, title: 'Help & tour', text: 'Come back here any time to take this tour again.', after: function () { if (browseOpen()) closeModal(); } },
       { el: ['.sidebar [data-cmd="eq"]', '#inspector [data-cmd="eq"]'], when: function () { return !IS_IOS; }, title: 'Rich sound 🔊',
         text: function () { return 'Tunebox makes your speakers sound fuller — deeper bass, clearer voices, wider sound. ' + soundProfileDesc() + ' Try one while music plays:'; },
-        controls: function () { var cur = settings.soundProfile || 'auto'; return '<div class="vibe-chips">' + [['auto', 'Auto'], ['rich', 'Rich'], ['laptop', 'Laptop'], ['headphones', 'Headphones'], ['bass', 'Bass'], ['vocal', 'Vocal'], ['off', 'Off']].map(function (o) { return '<button data-tset="soundProfile" data-val="' + o[0] + '"' + (o[0] === cur ? ' class="on"' : '') + '>' + o[1] + '</button>'; }).join('') + '</div>'; } },
+        controls: function () { var cur = settings.soundProfile || 'auto'; return '<div class="vibe-chips">' + [['auto', 'Auto'], ['rich', 'Rich'], ['laptop', 'Laptop'], ['phone', 'Phone'], ['headphones', 'Headphones'], ['bass', 'Bass'], ['vocal', 'Vocal'], ['off', 'Off']].map(function (o) { return '<button data-tset="soundProfile" data-val="' + o[0] + '"' + (o[0] === cur ? ' class="on"' : '') + '>' + o[1] + '</button>'; }).join('') + '</div>'; } },
       { title: 'Make it yours 🎨', text: 'Light or dark?', controls: function () { return tSeg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], settings.theme || 'auto'); } },
       { title: 'Pick a colour', text: 'The rainbow one takes its colours from each song’s album art.', controls: tSwatches },
       { el: ['.sidebar [data-view="settings"]', '.top-settings'], title: 'Everything else is in Settings', text: 'All of this — and much more — can be changed any time in Settings. You can take this tour again from Settings → Help.' },
@@ -6971,7 +7005,7 @@
     get fading() { return !!fade; },
     get gain() { return deckGains ? deckGains[active].gain.value : null; },
     debugScan: function (h) { return scanHandle(h); },
-    sound: { get enh() { return enh; }, get ac() { return ac; }, get limiter() { return limiter; }, profile: function () { return soundProfileName(); } },
+    sound: { get enh() { return enh; }, get ac() { return ac; }, get limiter() { return limiter; }, profile: function () { return soundProfileName(); }, build: buildEnhancer, apply: applySoundProfile, profiles: SOUND_PROFILES, setVolume: function (v) { setVolume(v); } },
     radio: { play: function (s) { playStation(s, [s]); }, get state() { return radio; } },
     debugPlay: function (id) { var ids = state.tracks.map(function (t) { return t.id; }); playIds(ids, ids.indexOf(id)); },
     debugLyrics: function () { return fetchOnlineLyrics(state.current); },

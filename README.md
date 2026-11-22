@@ -83,13 +83,17 @@ Tip: bookmark the page so you can open it in one click.
 ## Sound profiles (rich sound on any speaker)
 
 Tunebox makes small speakers sound bigger, the way some apps do by default. Find it in **Equalizer & Vibes** (top) or **Settings → Sound**:
-- **Auto** (default): picks for your device. Laptop speakers on a Mac, Headphones when headphones are playing, Rich otherwise.
+- **Auto** (default): picks for what's playing. Bluetooth earbuds and headphones get Rich (it spots them by their audio delay), a Mac's own speakers get Laptop speakers, and a phone's speaker gets Phone speaker.
 - **Rich:** fuller bass, warm mids, clear highs.
-- **Laptop speakers:** "virtual bass". Small speakers can't play deep notes, so Tunebox adds the bass notes' overtones, which they *can* play, and your ear fills in the low notes. You also get clearer voices and a wider sound.
+- **Laptop speakers** and **Phone speaker:** "virtual bass". Small speakers can't play deep notes, so Tunebox adds the bass notes' overtones (2× and 4× the note), which they *can* play, and your ear fills in the low notes. The overtones follow how loud the bass is, so they never sound fuzzy.
 - **Headphones**, **Bass boost** and **Vocal**.
 - **Off:** the song exactly as it was mixed.
 
-It works on top of the equalizer, and the built-in limiter stops it crackling. It isn't available on iPhone and iPad, because Safari doesn't allow sound processing there.
+How it stays good at every volume:
+- **Quiet:** ears hear less bass and treble when music is soft (the equal-loudness curves). With **Fuller sound at low volume** on, Tunebox adds a little bass and treble back as you turn down, and none at full volume.
+- **Loud:** a bass-only limiter holds back the deepest notes before they make small speakers rattle or distort, the same idea laptop and phone amplifiers use. The rest of the song isn't squashed.
+
+It works on top of the equalizer, and the final limiter stops crackling. It isn't available on iPhone and iPad, because Safari doesn't allow sound processing there.
 
 ## Progress bar styles
 
