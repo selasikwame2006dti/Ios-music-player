@@ -80,6 +80,17 @@ Tip: bookmark the page so you can open it in one click.
 - **Works offline.** After the first visit, the web version opens without internet. You can also install it from Chrome so it opens in its own window like a Mac app.
 - A Settings page for all of the above
 
+## Sound profiles (rich sound on any speaker)
+
+Tunebox makes small speakers sound bigger, the way some apps do by default. Find it in **Equalizer & Vibes** (top) or **Settings → Sound**:
+- **Auto** (default): picks for your device. Laptop speakers on a Mac, Headphones when headphones are playing, Rich otherwise.
+- **Rich:** fuller bass, warm mids, clear highs.
+- **Laptop speakers:** "virtual bass". Small speakers can't play deep notes, so Tunebox adds the bass notes' overtones, which they *can* play, and your ear fills in the low notes. You also get clearer voices and a wider sound.
+- **Headphones**, **Bass boost** and **Vocal**.
+- **Off:** the song exactly as it was mixed.
+
+It works on top of the equalizer, and the built-in limiter stops it crackling. It isn't available on iPhone and iPad, because Safari doesn't allow sound processing there.
+
 ## Progress bar styles
 
 Choose in **Settings → Appearance → Progress bar**:

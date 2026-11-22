@@ -1793,6 +1793,8 @@
       // the reverb is heavy work, so it's only wired in while it's actually turned up
       convNode = ac.createConvolver();
       convNode.buffer = makeImpulse(2.8, 2.4);
+      // sound profile: richer bass, mids and highs (after the EQ, before the reverb and limiter)
+      node = buildEnhancer(node);
       eqOut = node;
       node.connect(dryNode);
       convNode.connect(wetNode);
@@ -1864,6 +1866,144 @@
     clockCheck.at = now;
     clockCheck.t = t;
   }, 1000);
+
+  /* ---------------- sound profiles ----------------
+     Make small speakers sound big, the way some apps do by default:
+     - virtual bass: laptop speakers can't play deep bass, so we add the bass notes'
+       overtones (which they can play) and the ear fills in the missing low notes
+     - a fuller low end, a clearer presence range and a little "air" on top
+     - a light exciter for sparkle, stereo widening (laptop speakers sit close together)
+     - parallel compression: quiet detail comes up, the sound gets denser
+     The limiter after it keeps everything from crackling. */
+  var SOUND_PROFILES = {
+    rich:       { name: 'Rich',            desc: 'Fuller bass, warm mids and clear highs — great on most speakers.', hp: 20, low: [100, 3.5], mid: [1400, 0.8], pres: [3200, 1.5], air: [11000, 2.5], vbass: 0.05, excite: 0.10, width: 1.2, comp: 0.30, gain: 1.5 },
+    laptop:     { name: 'Laptop speakers', desc: 'For small built-in speakers: deep-sounding bass they can’t normally play, clearer voices, wider sound.', hp: 95, low: [180, 3], mid: [900, 1.5], pres: [2800, 2.5], air: [10000, 3], vbass: 0.11, excite: 0.14, width: 1.4, comp: 0.45, gain: 2.5 },
+    headphones: { name: 'Headphones',      desc: 'Tight, punchy bass and detail, without widening.', hp: 15, low: [80, 3.5], mid: [1200, 0.5], pres: [3500, 1], air: [12000, 2], vbass: 0.015, excite: 0.06, width: 1.0, comp: 0.2, gain: 1 },
+    bass:       { name: 'Bass boost',      desc: 'Heavy, full low end.', hp: 20, low: [90, 7], mid: [1200, 0], pres: [3200, 1], air: [11000, 1.5], vbass: 0.07, excite: 0.06, width: 1.15, comp: 0.35, gain: 0.5 },
+    vocal:      { name: 'Vocal',           desc: 'Clear voices and lyrics — good for podcasts and soft songs.', hp: 60, low: [120, 0], mid: [1500, 2], pres: [3000, 3.5], air: [10000, 2], vbass: 0.02, excite: 0.1, width: 1.1, comp: 0.35, gain: 1.5 },
+    off:        { name: 'Off',             desc: 'No extra processing — the song exactly as it was mixed.', hp: 10, low: [100, 0], mid: [1200, 0], pres: [3200, 0], air: [11000, 0], vbass: 0, excite: 0, width: 1, comp: 0, gain: 0 }
+  };
+  var enh = null;
+  function shaperCurve(drive, even) {
+    var n = 2048, c = new Float32Array(n);
+    for (var i = 0; i < n; i++) {
+      var x = i * 2 / n - 1;
+      c[i] = Math.tanh(drive * x) / Math.tanh(drive) + even * x * x; // odd + a little even harmonics
+    }
+    return c;
+  }
+  function buildEnhancer(input) {
+    var c = ac;
+    var bq = function (type, f, q) { var b = c.createBiquadFilter(); b.type = type; b.frequency.value = f; if (q) b.Q.value = q; return b; };
+    var g = function (v) { var x = c.createGain(); x.gain.value = v; return x; };
+    var e = enh = {};
+    e.hp = bq('highpass', 20, 0.7);
+    e.low = bq('lowshelf', 100);
+    e.mid = bq('peaking', 1200, 0.9);
+    e.pres = bq('peaking', 3200, 1.0);
+    e.air = bq('highshelf', 11000);
+    e.sum = g(1);
+    input.connect(e.hp); e.hp.connect(e.low); e.low.connect(e.mid); e.mid.connect(e.pres); e.pres.connect(e.air); e.air.connect(e.sum);
+    // virtual bass: take the lows, make harmonics, keep the part small speakers can play
+    // (driven hard, so even quiet bass makes clear overtones — like the bass enhancers in phones and TVs)
+    e.vbIn = bq('lowpass', 140, 0.7);
+    e.vbDrive = g(14);
+    e.vbShape = c.createWaveShaper(); e.vbShape.curve = shaperCurve(3, 0.5); e.vbShape.oversample = '2x';
+    e.vbHp = bq('highpass', 110, 0.7);
+    e.vbBand = bq('lowpass', 520, 0.7);
+    e.vbGain = g(0);
+    input.connect(e.vbIn); e.vbIn.connect(e.vbDrive); e.vbDrive.connect(e.vbShape); e.vbShape.connect(e.vbHp); e.vbHp.connect(e.vbBand); e.vbBand.connect(e.vbGain); e.vbGain.connect(e.sum);
+    // exciter: a touch of harmonics on the highs for sparkle
+    e.exIn = bq('highpass', 3500, 0.7);
+    e.exShape = c.createWaveShaper(); e.exShape.curve = shaperCurve(2.5, 0); e.exShape.oversample = '2x';
+    e.exGain = g(0);
+    input.connect(e.exIn); e.exIn.connect(e.exShape); e.exShape.connect(e.exGain); e.exGain.connect(e.sum);
+    // stereo width (mid/side): L' = aL + bR, R' = aR + bL
+    e.split = c.createChannelSplitter(2); e.merge = c.createChannelMerger(2);
+    e.ll = g(1); e.rr = g(1); e.lr = g(0); e.rl = g(0);
+    e.sum.connect(e.split);
+    e.split.connect(e.ll, 0); e.split.connect(e.rl, 0); e.split.connect(e.rr, 1); e.split.connect(e.lr, 1);
+    e.ll.connect(e.merge, 0, 0); e.lr.connect(e.merge, 0, 0); e.rr.connect(e.merge, 0, 1); e.rl.connect(e.merge, 0, 1);
+    // parallel compression: a squeezed copy mixed under the original
+    e.out = g(1);
+    e.dry = g(1);
+    e.comp = c.createDynamicsCompressor();
+    e.comp.threshold.value = -32; e.comp.knee.value = 10; e.comp.ratio.value = 6; e.comp.attack.value = 0.008; e.comp.release.value = 0.25;
+    e.compGain = g(0);
+    e.merge.connect(e.dry); e.dry.connect(e.out);
+    e.merge.connect(e.comp); e.comp.connect(e.compGain); e.compGain.connect(e.out);
+    e.makeup = g(1);
+    e.out.connect(e.makeup);
+    applySoundProfile(true);
+    return e.makeup;
+  }
+  // "Auto" picks a profile from what's playing the sound
+  function autoProfile() {
+    if (IS_PHONE) return 'rich';
+    var lab = (settings.sinkId ? settings.sinkLabel : (outputLabel || '')) || '';
+    var k = lab ? devKind(lab) : '';
+    if (k === 'headphones') return 'headphones';
+    if (k === 'speaker' || k === 'tv') return 'rich';
+    if (k === 'laptop' || /macbook/i.test(lab) || /Macintosh/.test(navigator.userAgent)) return 'laptop';
+    return 'rich';
+  }
+  var outputLabel = '';
+  function soundProfileName() { var p = settings.soundProfile || 'auto'; return p === 'auto' ? autoProfile() : p; }
+  function applySoundProfile(now) {
+    if (!enh || !ac) return;
+    var P = SOUND_PROFILES[soundProfileName()] || SOUND_PROFILES.rich, t = ac.currentTime, tc = now ? 0.001 : 0.12;
+    var set = function (param, v) { param.setTargetAtTime(v, t, tc); };
+    set(enh.hp.frequency, P.hp);
+    set(enh.low.frequency, P.low[0]); set(enh.low.gain, P.low[1]);
+    set(enh.mid.frequency, P.mid[0]); set(enh.mid.gain, P.mid[1]);
+    set(enh.pres.frequency, P.pres[0]); set(enh.pres.gain, P.pres[1]);
+    set(enh.air.frequency, P.air[0]); set(enh.air.gain, P.air[1]);
+    set(enh.vbGain.gain, P.vbass);
+    set(enh.exGain.gain, P.excite);
+    var a = (1 + P.width) / 2, b = (1 - P.width) / 2;
+    set(enh.ll.gain, a); set(enh.rr.gain, a); set(enh.lr.gain, b); set(enh.rl.gain, b);
+    set(enh.compGain.gain, P.comp * 1.8);
+    set(enh.dry.gain, 1 - P.comp * 0.25);
+    set(enh.makeup.gain, Math.pow(10, P.gain / 20));
+    $$('.sp-chip').forEach(function (x) { x.classList.toggle('on', x.getAttribute('data-sp') === (settings.soundProfile || 'auto')); });
+    $$('.sp-desc').forEach(function (x) { x.textContent = soundProfileDesc(); });
+  }
+  function soundProfileDesc() {
+    var n = soundProfileName(), P = SOUND_PROFILES[n];
+    if (!ac && IS_IOS) return 'Sound profiles aren’t available on iPhone and iPad — Safari doesn’t allow sound processing there.';
+    if (settings.webAudio === false) return 'Turn on Settings → App → Sound effects engine to use sound profiles.';
+    return ((settings.soundProfile || 'auto') === 'auto' ? 'Auto chose “' + P.name + '” for this device. ' : '') + P.desc;
+  }
+  function soundProfileChips() {
+    var cur = settings.soundProfile || 'auto';
+    return '<div class="vibe-chips sp-chips">' + [['auto', 'Auto']].concat(Object.keys(SOUND_PROFILES).map(function (k) { return [k, SOUND_PROFILES[k].name]; })).map(function (o) {
+      return '<button class="sp-chip' + (o[0] === cur ? ' on' : '') + '" data-sp="' + o[0] + '">' + o[1] + '</button>';
+    }).join('') + '</div>';
+  }
+  function renderSoundProfileBox() { var b = $('spChips'); if (b) b.innerHTML = soundProfileChips(); $$('.sp-desc').forEach(function (x) { x.textContent = soundProfileDesc(); }); }
+  function setSoundProfile(name) {
+    settings.soundProfile = name;
+    saveSettings();
+    ensureAudioGraph();
+    applySoundProfile();
+    toast('Sound: ' + (name === 'auto' ? 'Auto (' + SOUND_PROFILES[soundProfileName()].name + ')' : SOUND_PROFILES[name].name), 1400);
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-sp]');
+    if (b && !b.closest('#tour')) setSoundProfile(b.getAttribute('data-sp'));
+  });
+  // Auto follows the output: switching to headphones or speakers changes the profile
+  function refreshOutputLabel() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    navigator.mediaDevices.enumerateDevices().then(function (l) {
+      var d = l.filter(function (x) { return x.kind === 'audiooutput' && x.deviceId === 'default' && x.label; })[0];
+      outputLabel = d ? d.label.replace(/^Default\s*-\s*/i, '') : '';
+      if ((settings.soundProfile || 'auto') === 'auto') applySoundProfile();
+    }).catch(function () {});
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', function () { setTimeout(refreshOutputLabel, 500); });
+  refreshOutputLabel();
+  renderSoundProfileBox();
 
   function routeLeveller() {
     if (!preampNode || !leveller) return;
@@ -2942,8 +3082,9 @@
         sRow('Reverb', '', sSlider('reverb', 0, 0.8, 0.01, settings.reverb || 0, SLIDE_LABELS.reverb(settings.reverb || 0))) +
         sRow('Volume boost', 'Extra loudness. A limiter stops it from crackling.', sSlider('preamp', -12, 12, 1, settings.preamp || 0, SLIDE_LABELS.preamp(settings.preamp || 0)))) +
 
-      sCard('Equalizer', '10 bands, ±15 dB.',
-        sRow('Current sound', eqName, sBtn('Open equalizer', 'data-cmd="eq"', true))) +
+      sCard('Sound', 'Make any speaker sound richer — even small laptop speakers.',
+        sRow('Sound profile', '<span class="sp-desc">' + esc(soundProfileDesc()) + '</span>', soundProfileChips(), 'wide') +
+        sRow('Equalizer', eqName + ' · 10 bands, ±15 dB', sBtn('Open equalizer', 'data-cmd="eq"', true))) +
 
       sCard('Tunebox DJ', 'Plays songs that go well together, forever. No internet or AI service — it learns from what you play and skip.',
         sRow('DJ', settings.dj ? 'On — it’s picking your songs.' : 'Off', sSwitch('dj')) +
@@ -5074,6 +5215,7 @@
             settings.sinkId = id;
             settings.sinkLabel = id ? label : '';
             saveSettings();
+            if ((settings.soundProfile || 'auto') === 'auto') applySoundProfile();
             updateOutputChip();
             toast(id ? 'Playing on ' + label : 'Playing on this device', 1800);
             openOutput();
@@ -6210,6 +6352,7 @@
   }
   function applyTourSetting(key, val) {
     if (key === 'crossfade') { settings.crossfade = +val; saveSettings(); }
+    else if (key === 'soundProfile') { setSoundProfile(val); if (tour) $('tour').querySelector('p').textContent = typeof tour.step.text === 'function' ? tour.step.text() : tour.step.text; }
     else if (key === 'lyricsOnline') { settings.lyricsOnline = val === 'on'; applySetting('lyricsOnline', settings.lyricsOnline); }
     else {
       if (key !== 'theme') settings[key] = val;
@@ -6257,6 +6400,9 @@
       { el: ['#modal .browse-list [data-cmd="output"]'], when: browseOpen, title: 'Play on… / Cast', text: 'How to play on a speaker or TV.' },
       { el: ['#modal .browse-list [data-view="connect"]'], when: browseOpen, title: 'Connect devices', text: 'Use your phone as a remote for your PC, send songs between devices, or let friends add songs at a party.' },
       { el: ['#modal .browse-list [data-cmd="tour"]'], when: browseOpen, title: 'Help & tour', text: 'Come back here any time to take this tour again.', after: function () { if (browseOpen()) closeModal(); } },
+      { el: ['.sidebar [data-cmd="eq"]', '#inspector [data-cmd="eq"]'], when: function () { return !IS_IOS; }, title: 'Rich sound 🔊',
+        text: function () { return 'Tunebox makes your speakers sound fuller — deeper bass, clearer voices, wider sound. ' + soundProfileDesc() + ' Try one while music plays:'; },
+        controls: function () { var cur = settings.soundProfile || 'auto'; return '<div class="vibe-chips">' + [['auto', 'Auto'], ['rich', 'Rich'], ['laptop', 'Laptop'], ['headphones', 'Headphones'], ['bass', 'Bass'], ['vocal', 'Vocal'], ['off', 'Off']].map(function (o) { return '<button data-tset="soundProfile" data-val="' + o[0] + '"' + (o[0] === cur ? ' class="on"' : '') + '>' + o[1] + '</button>'; }).join('') + '</div>'; } },
       { title: 'Make it yours 🎨', text: 'Light or dark?', controls: function () { return tSeg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], settings.theme || 'auto'); } },
       { title: 'Pick a colour', text: 'The rainbow one takes its colours from each song’s album art.', controls: tSwatches },
       { el: ['.sidebar [data-view="settings"]', '.top-settings'], title: 'Everything else is in Settings', text: 'All of this — and much more — can be changed any time in Settings. You can take this tour again from Settings → Help.' },
@@ -6825,6 +6971,7 @@
     get fading() { return !!fade; },
     get gain() { return deckGains ? deckGains[active].gain.value : null; },
     debugScan: function (h) { return scanHandle(h); },
+    sound: { get enh() { return enh; }, get ac() { return ac; }, get limiter() { return limiter; }, profile: function () { return soundProfileName(); } },
     radio: { play: function (s) { playStation(s, [s]); }, get state() { return radio; } },
     debugPlay: function (id) { var ids = state.tracks.map(function (t) { return t.id; }); playIds(ids, ids.indexOf(id)); },
     debugLyrics: function () { return fetchOnlineLyrics(state.current); },
