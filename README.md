@@ -85,7 +85,7 @@ Tip: bookmark the page so you can open it in one click.
 Tunebox makes small speakers sound bigger, the way some apps do by default. Find it in **Equalizer & Vibes** (top) or **Settings → Sound**:
 - **Auto** (default): picks for what's playing. Bluetooth earbuds and headphones get Rich (it spots them by their audio delay), a Mac's own speakers get Laptop speakers, and a phone's speaker gets Phone speaker.
 - **Rich:** fuller bass, warm mids, clear highs.
-- **Laptop speakers** and **Phone speaker:** "virtual bass". Small speakers can't play deep notes, so Tunebox adds the bass notes' overtones (2× and 4× the note), which they *can* play, and your ear fills in the low notes. The overtones follow how loud the bass is, so they never sound fuzzy.
+- **Laptop speakers** (light, clear voices, a little deeper bass) and **Phone speaker:** "virtual bass". Small speakers can't play deep notes, so Tunebox adds the bass notes' overtones (2× and 4× the note), which they *can* play, and your ear fills in the low notes. The overtones follow how loud the bass is, so they never sound fuzzy.
 - **Headphones**, **Bass boost** and **Vocal**.
 - **Off:** the song exactly as it was mixed.
 

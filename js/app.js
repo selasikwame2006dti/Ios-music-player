@@ -1801,10 +1801,10 @@
       convNode.connect(wetNode);
       // a limiter catches peaks, so big EQ boosts get loud without crackling
       limiter = ac.createDynamicsCompressor();
-      limiter.threshold.value = -1.5;
+      limiter.threshold.value = -2.5;
       limiter.knee.value = 0;
       limiter.ratio.value = 20;
-      limiter.attack.value = 0.002;
+      limiter.attack.value = 0.001;
       limiter.release.value = 0.2;
       dryNode.connect(limiter);
       wetNode.connect(limiter);
@@ -1881,7 +1881,7 @@
      4. Do no harm: profiles are light; "Off" bypasses everything. */
   var SOUND_PROFILES = {
     rich:       { name: 'Rich',            desc: 'Fuller bass and warmth, clear highs — great on earbuds, headphones and speakers.', hp: 15, low: [90, 3], mid: [250, 1], pres: [3200, 0.8], air: [11000, 1.5], vb: 0.3, vb2: 0.4, vbBand: [100, 450], ex: 0.04, width: 1.12, comp: 0.25, gain: 0, lowThr: -14, small: false },
-    laptop:     { name: 'Laptop speakers', desc: 'Light touch for built-in speakers: deeper-sounding bass, kept clean when loud, and fuller sound when quiet.', hp: 15, low: [140, 1.5], mid: [260, 1], pres: [3000, 0], air: [10000, 1], vb: 0.6, vb2: 0.9, vbBand: [100, 600], ex: 0.03, width: 1.1, comp: 0.18, gain: 0, lowThr: -18, small: true },
+    laptop:     { name: 'Laptop speakers', desc: 'Light touch for built-in speakers: deeper-sounding bass, kept clean when loud, and fuller sound when quiet.', hp: 40, low: [120, 0], mid: [300, -0.5], pres: [3000, 1], air: [10000, 1], vb: 0.3, vb2: 0.25, vbBand: [110, 500], ex: 0.03, width: 1.1, comp: 0.15, gain: 0, lowThr: -20, small: true },
     phone:      { name: 'Phone speaker',   desc: 'For the phone’s own speaker: bass you can actually hear on it, clear voices, no distortion when loud.', hp: 60, low: [200, 1.5], mid: [400, 1.5], pres: [2500, 0.5], air: [9000, 1], vb: 0.9, vb2: 1.0, vbBand: [200, 900], ex: 0.03, width: 1.0, comp: 0.3, gain: 0, lowThr: -16, small: true },
     headphones: { name: 'Headphones',      desc: 'Tight, punchy bass and detail, without widening.', hp: 10, low: [80, 2.5], mid: [250, 0.5], pres: [3500, 0.5], air: [12000, 1.5], vb: 0.05, vb2: 0, vbBand: [100, 400], ex: 0.03, width: 1.0, comp: 0.15, gain: 0, lowThr: -6, small: false },
     bass:       { name: 'Bass boost',      desc: 'Heavy, full low end.', hp: 15, low: [90, 6], mid: [250, 1], pres: [3000, 0.5], air: [11000, 1], vb: 0.5, vb2: 0.5, vbBand: [100, 450], ex: 0.03, width: 1.1, comp: 0.3, gain: 0, lowThr: -8, small: false },
@@ -1889,6 +1889,7 @@
     off:        { name: 'Off',             desc: 'No extra processing — the song exactly as it was mixed.', off: true, hp: 10, low: [100, 0], mid: [1200, 0], pres: [3200, 0], air: [11000, 0], vb: 0, vbBand: [100, 450], ex: 0, width: 1, comp: 0, gain: 0, lowThr: 0, small: false }
   };
   var enh = null;
+  var COMP_LOOKAHEAD = 0.006; // DynamicsCompressorNode's built-in look-ahead (same in Chrome, Safari and Firefox)
   function rectifierCurve() { var n = 4096, c = new Float32Array(n); for (var i = 0; i < n; i++) c[i] = Math.abs(i * 2 / n - 1); return c; }
   function softCurve(drive) { var n = 2048, c = new Float32Array(n); for (var i = 0; i < n; i++) { var x = i * 2 / n - 1; c[i] = Math.tanh(drive * x) / Math.tanh(drive); } return c; }
   function buildEnhancer(c, input) {
@@ -1902,7 +1903,10 @@
     e.lowLim.knee.value = 6; e.lowLim.ratio.value = 10; e.lowLim.attack.value = 0.005; e.lowLim.release.value = 0.18; e.lowLim.threshold.value = 0;
     e.split = g(1);
     input.connect(e.xLo1); e.xLo1.connect(e.xLo2); e.xLo2.connect(e.lowLim); e.lowLim.connect(e.split);
-    input.connect(e.xHi1); e.xHi1.connect(e.xHi2); e.xHi2.connect(e.split);
+    // the browser's compressor looks 6 ms ahead, so it delays the lows by 6 ms. Delay the highs the same,
+    // or a kick's click / a bass pluck's attack arrives before its body (heard as a tone just before the hit)
+    e.hiDelay = c.createDelay(0.05); e.hiDelay.delayTime.value = COMP_LOOKAHEAD;
+    input.connect(e.xHi1); e.xHi1.connect(e.xHi2); e.xHi2.connect(e.hiDelay); e.hiDelay.connect(e.split);
     // tone: profile shape + (1) loudness at low volume
     e.hp = bq('highpass', 15, 0.7);
     e.low = bq('lowshelf', 100); e.mid = bq('peaking', 1200, 0.8); e.pres = bq('peaking', 3200, 1.0); e.air = bq('highshelf', 11000);
@@ -1938,7 +1942,8 @@
     e.comp = c.createDynamicsCompressor();
     e.comp.threshold.value = -30; e.comp.knee.value = 12; e.comp.ratio.value = 3; e.comp.attack.value = 0.015; e.comp.release.value = 0.3;
     e.compGain = g(0);
-    e.mg.connect(e.dry); e.dry.connect(e.out);
+    e.dryDelay = c.createDelay(0.05); e.dryDelay.delayTime.value = COMP_LOOKAHEAD; // line up with the compressed copy (no comb/echo)
+    e.mg.connect(e.dryDelay); e.dryDelay.connect(e.dry); e.dry.connect(e.out);
     e.mg.connect(e.comp); e.comp.connect(e.compGain); e.compGain.connect(e.out);
     e.makeup = g(1);
     e.out.connect(e.makeup);
@@ -1980,10 +1985,10 @@
     set(e.mid.frequency, P.mid[0]); set(e.mid.gain, P.mid[1]);
     set(e.pres.frequency, P.pres[0]); set(e.pres.gain, P.pres[1]);
     set(e.air.frequency, P.air[0]); set(e.air.gain, P.air[1]);
-    set(e.lcLow.gain, P.small ? lcBass * 0.5 : lcBass); // small speakers get the rest as overtones
+    set(e.lcLow.gain, P.small ? Math.min(2, lcBass * 0.35) : lcBass); // small speakers get the rest as overtones
     set(e.lcHigh.gain, lcTreb);
     set(e.lowLim.threshold, P.off ? 0 : P.lowThr);
-    var vbBoost = P.small ? 1 + Math.min(0.8, att * 0.04) : 1;
+    var vbBoost = P.small ? 1 + Math.min(0.4, att * 0.02) : 1;
     set(e.vbGain.gain, P.vb * vbBoost);
     set(e.vb2Gain.gain, P.vb * vbBoost * (P.vb2 || 0));
     set(e.vbHp1.frequency, P.vbBand[0]); set(e.vbHp2.frequency, P.vbBand[0]); set(e.vbLp.frequency, P.vbBand[1]);
